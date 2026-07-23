@@ -1,7 +1,7 @@
 """
 Joining per-region extractions into a monthly domain dataset.
 
-Extracts each world region in a domain (writing per-region NetCDF intermediates),
+Extracts each world region in a domain (writing per-region zarr intermediates),
 then stitches them into a single monthly dataset: regions in the same longitude
 column are concatenated along latitude, then the columns are concatenated along
 longitude. Coordinates are normalised/deduplicated and 1-cell join seams filled.
@@ -13,6 +13,7 @@ Ported from ``satellite_met_join_v2.py``.
 import datetime
 import glob
 import os
+import shutil
 
 import numpy as np
 import xarray as xr
@@ -59,11 +60,19 @@ def normalize_coords(ds, decimals=COORD_DECIMALS):
 
 
 def fill_join_seams(ds):
-    """Fill 1-cell NaN seams introduced at region boundaries during stitching."""
-    ds = ds.interpolate_na(dim="latitude", method="linear", limit=1)
-    ds = ds.interpolate_na(dim="longitude", method="linear", limit=1)
-    ds = ds.interpolate_na(dim="latitude", method="nearest", limit=1)
-    ds = ds.interpolate_na(dim="longitude", method="nearest", limit=1)
+    """
+    Fill 1-cell NaN seams introduced at region boundaries during stitching.
+
+    ``interpolate_na`` treats its dim as a core dimension under dask, so that dim
+    must sit in a single chunk. Rechunking once up front is not enough: each pass
+    re-splits the *other* horizontal dim, so every pass rechunks the dim it is
+    about to interpolate. time stays chunked throughout, which is what keeps this
+    streaming a block at a time rather than pulling the whole month in.
+    """
+    ds = ds.chunk({"latitude": -1}).interpolate_na(dim="latitude", method="linear", limit=1)
+    ds = ds.chunk({"longitude": -1}).interpolate_na(dim="longitude", method="linear", limit=1)
+    ds = ds.chunk({"latitude": -1}).interpolate_na(dim="latitude", method="nearest", limit=1)
+    ds = ds.chunk({"longitude": -1}).interpolate_na(dim="longitude", method="nearest", limit=1)
     return ds
 
 
@@ -88,12 +97,26 @@ def _preprocess_for_zarr(ds):
     return ds
 
 
+def _region_intermediate_path(scratch_dir, stem, date_tag, region_id):
+    """Path of one region's zarr intermediate."""
+    return os.path.join(scratch_dir, f"{stem}_Met_{date_tag}_{region_id}.zarr")
+
+
 def _open_region(file_path, region_id):
-    """Open one per-region intermediate and clean its coordinates for stitching."""
+    """Open one per-region zarr intermediate and clean its coordinates for stitching."""
     log(f"Opening region {region_id}: {file_path}")
-    ds = xr.open_dataset(file_path)
+    ds = xr.open_zarr(file_path)
+    # Drop the encoding zarr attaches on read (chunking, compressors, serializer,
+    # zarr format). It describes how the scratch intermediate happens to be stored,
+    # which has nothing to do with the yearly store; left in place it breaks that
+    # write whenever the two layouts or zarr formats disagree.
+    for var in ds.variables.values():
+        var.encoding = {}
+    # Only cast what isn't already float32 — extraction writes float32, so this
+    # is normally a no-op and skipping it keeps the graph clean.
     for v in ds.data_vars:
-        ds[v] = ds[v].astype("float32")
+        if ds[v].dtype != "float32":
+            ds[v] = ds[v].astype("float32")
     ds = normalize_coords(ds)
     ds = ds.sortby("longitude")
     ds = drop_duplicate_coords(ds, "longitude")
@@ -184,9 +207,7 @@ def join_month(
 
     # 1. Ensure each region has an intermediate file.
     for region_id in regions:
-        region_file = os.path.join(
-            scratch_dir, f"{stem}_Met_{date_tag}_{region_id}.nc"
-        )
+        region_file = _region_intermediate_path(scratch_dir, stem, date_tag, region_id)
         if reuse_existing and os.path.exists(region_file):
             log(f"region {region_id} intermediate already exists, reusing")
             continue
@@ -210,9 +231,9 @@ def join_month(
 
     # Confirm all region files now exist.
     for region_id in regions:
-        pattern = os.path.join(scratch_dir, f"{stem}_Met_{date_tag}_*")
-        files = glob.glob(pattern)
-        if np.sum([f"_{region_id}.nc" in f for f in files]) != 1:
+        if not os.path.exists(
+            _region_intermediate_path(scratch_dir, stem, date_tag, region_id)
+        ):
             raise FileNotFoundError(
                 f"Missing intermediate for region {region_id} in {scratch_dir}"
             )
@@ -229,8 +250,8 @@ def join_month(
             for region_id in column:
                 if region_id is None:
                     continue
-                file_path = os.path.join(
-                    scratch_dir, f"{stem}_Met_{date_tag}_{region_id}.nc"
+                file_path = _region_intermediate_path(
+                    scratch_dir, stem, date_tag, region_id
                 )
                 lat_datasets.append(_open_region(file_path, region_id))
 
@@ -300,15 +321,15 @@ def join_month(
 
 def cleanup_region_intermediates(domain_name, year, month, scratch_dir, day=None,
                                  suffix=None):
-    """Delete per-region NetCDF intermediates for a domain/year/month (or day)."""
+    """Delete per-region zarr intermediates for a domain/year/month (or day)."""
     stem = store_stem(domain_name, suffix)
     month_str = f"{int(month):02d}"
     date_tag = f"{year}{month_str}{int(day):02d}" if day is not None else f"{year}{month_str}"
-    pattern = os.path.join(scratch_dir, f"{stem}_Met_{date_tag}_*.nc")
+    pattern = os.path.join(scratch_dir, f"{stem}_Met_{date_tag}_*.zarr")
     removed = 0
     for f in glob.glob(pattern):
         try:
-            os.remove(f)
+            shutil.rmtree(f)
             removed += 1
         except OSError:
             pass

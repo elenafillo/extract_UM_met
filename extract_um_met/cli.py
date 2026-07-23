@@ -350,7 +350,7 @@ def _make_run_parser(subparsers):
     parser.add_argument(
         '--keep-intermediates',
         action='store_true',
-        help='Keep per-region NetCDF intermediates in scratch (default: delete after append)'
+        help='Keep per-region zarr intermediates in scratch (default: delete after append)'
     )
 
     parser.add_argument(
@@ -765,7 +765,7 @@ def _make_extract_parser(subparsers):
         type=str,
         default=None,
         help='Optional tag appended to the domain name in the intermediate '
-             'filenames ({domain}_{suffix}_Met_{date}[_{region}].nc), keeping a '
+             'filenames ({domain}_{suffix}_Met_{date}_{region}.zarr), keeping a '
              'variant extraction separate from the main one in scratch.'
     )
 

@@ -11,6 +11,7 @@ import glob
 import gzip
 import shutil
 import datetime
+import concurrent.futures
 
 
 def remove_coord_callback(cube, field, filename):
@@ -79,6 +80,32 @@ def get_Mk(year, month):
 _KNOWN_BAD_FILES = {"MO201402011500.UMG_Mk7_I_L59PT9.pp"}
 
 
+def _decompress_workers():
+    """Thread count for parallel decompression: the task's CPUs, else all cores."""
+    return int(os.environ.get("SLURM_CPUS_PER_TASK") or os.cpu_count() or 1)
+
+
+def _decompress_gz(src, dest):
+    """
+    Decompress one ``.pp.gz`` to ``dest`` via a per-process temp file + atomic rename.
+
+    An interrupted decompress (crash, kill, full disk) then leaves only a `.tmp`
+    file, never a truncated `dest` that later runs would reuse without
+    re-validating (the cause of the merge-time "meta or dtype" failures). The PID
+    keeps concurrent SLURM array tasks sharing this scratch from clobbering each
+    other's temp.
+    """
+    tmp = f"{dest}.tmp.{os.getpid()}"
+    try:
+        with gzip.open(src, "rb") as f_in, open(tmp, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        os.replace(tmp, dest)   # atomic on the same filesystem
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def load_files(files, vars, homefolder, callback=remove_coord_callback):
     """
     Load iris cubes from an explicit list of archive files (source-agnostic).
@@ -107,10 +134,13 @@ def load_files(files, vars, homefolder, callback=remove_coord_callback):
     if not files:
         raise FileNotFoundError("load_files: no input files to load")
 
-    os.makedirs(homefolder, exist_ok=True)
+    try:
+        os.makedirs(homefolder, exist_ok=True)
+    except FileExistsError:
+        pass
 
     to_load = []
-    n_decompressed = 0
+    jobs = []   # (src_gz, dest) pairs still needing decompression
     for f in files:
         base = os.path.basename(f)
         if base in _KNOWN_BAD_FILES or base[:-3] in _KNOWN_BAD_FILES:
@@ -118,28 +148,20 @@ def load_files(files, vars, homefolder, callback=remove_coord_callback):
         if f.endswith(".gz"):
             dest = os.path.join(homefolder, base[:-3])   # strip '.gz'
             if not os.path.exists(dest):
-                # Decompress to a per-process temp file, then atomically rename.
-                # An interrupted decompress (crash, kill, full disk) then leaves
-                # only a `.tmp` file, never a truncated `dest` that later runs
-                # would reuse without re-validating (the cause of the merge-time
-                # "meta or dtype" failures). The PID keeps concurrent SLURM array
-                # tasks sharing this scratch from clobbering each other's temp.
-                tmp = f"{dest}.tmp.{os.getpid()}"
-                try:
-                    with gzip.open(f, "rb") as f_in, open(tmp, "wb") as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-                    os.replace(tmp, dest)   # atomic on the same filesystem
-                except BaseException:
-                    if os.path.exists(tmp):
-                        os.remove(tmp)
-                    raise
-                n_decompressed += 1
+                jobs.append((f, dest))
             to_load.append(dest)
         else:
             to_load.append(f)   # uncompressed: read directly from the archive
 
+    # Decompress the missing files in parallel across the task's CPUs — zlib
+    # releases the GIL, so threads scale. Iterating the results propagates the
+    # first failure (each job cleans up its own temp on the way out).
+    if jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_decompress_workers()) as pool:
+            list(pool.map(lambda job: _decompress_gz(*job), jobs))
+
     print(f"[load_files] {len(to_load)} file(s) to load "
-          f"({n_decompressed} newly decompressed to scratch)")
+          f"({len(jobs)} newly decompressed to scratch)")
     loaded = iris.load(to_load, vars, callback=callback)
     print(f"[load_files] loaded {len(loaded)} cube(s)")
     return loaded

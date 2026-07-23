@@ -3,7 +3,7 @@ Per-region extraction of UM meteorology data.
 
 Extracts data from UM .pp files for a single world region, aligns winds onto the
 mass grid, applies the target grid (footprint/regular = interpolate, native =
-passthrough), slices to the region's bounds, and writes a per-region NetCDF
+passthrough), slices to the region's bounds, and writes a per-region zarr
 intermediate to scratch. The join step later stitches these intermediates into a
 full domain.
 
@@ -149,6 +149,16 @@ def log(msg):
     print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
+def _dir_size_mb(path):
+    """Total on-disk size (MB) of a directory tree (e.g. a zarr store)."""
+    total = sum(
+        os.path.getsize(os.path.join(root, name))
+        for root, _dirs, files in os.walk(path)
+        for name in files
+    )
+    return total / (1024 * 1024)
+
+
 def _dataarray_from_iris_safely(cube):
     """Convert an iris cube to an xarray DataArray, muting the timedelta-decode warning."""
     with warnings.catch_warnings():
@@ -207,7 +217,7 @@ def extract_region(
 
     Loads the region's monthly UM data, aligns winds onto the mass grid, applies
     the target grid, slices to the region's bounds (handling dateline crossings),
-    and writes a per-region NetCDF intermediate to scratch.
+    and writes a per-region zarr intermediate to scratch.
 
     Parameters
     ----------
@@ -248,7 +258,7 @@ def extract_region(
     Returns
     -------
     pathlib.Path or xarray.Dataset
-        Path to the per-region NetCDF (if ``save``), else the dataset.
+        Path to the per-region zarr store (if ``save``), else the dataset.
     """
     if isinstance(cfg, dict):
         cfg = Config(cfg)
@@ -274,7 +284,12 @@ def extract_region(
     scratch_root = resolve_config_value(cfg.get("scratch_path", ""), cfg.data)
     if scratch_dir is None:
         scratch_dir = os.path.join(scratch_root, "files")
-    os.makedirs(scratch_dir, exist_ok=True)
+    # exist_ok=True isn't race-safe on parallel scratch: concurrent array
+    # tasks can lose the mkdir and see a stale isdir(), so ignore EEXIST.
+    try:
+        os.makedirs(scratch_dir, exist_ok=True)
+    except FileExistsError:
+        pass
 
     mk = source.get_mk(year, month_int)
     levels = source.levels()
@@ -417,21 +432,26 @@ def extract_region(
             )
             return result
 
+        # Whole lat/lon/levels with time in blocks: big, Lustre-friendly chunks
+        # that dask writes in parallel (each ~tens of MB), and that the join reads
+        # back whole per region.
         result = result.chunk(
-            {"model_level_number": -1, "time": 50, "latitude": 50, "longitude": 50}
+            {"model_level_number": -1, "time": 24, "latitude": -1, "longitude": -1}
         )
 
-        filename = os.path.join(scratch_dir, f"{stem}_Met_{date}_{region_id}.nc")
+        store = os.path.join(scratch_dir, f"{stem}_Met_{date}_{region_id}.zarr")
         t0 = datetime.datetime.now()
-        result.to_netcdf(filename)
-        size_mb = os.stat(filename).st_size / (1024 * 1024)
+        # Same zarr format as the yearly store, so scratch and final output stay on
+        # one format instead of the intermediates taking the library default (v3).
+        result.to_zarr(store, mode="w", zarr_format=cfg.get("zarr_format", 2))
+        size_mb = _dir_size_mb(store)
         log(
-            f"---- Region {region_id} saved to {filename} in "
+            f"---- Region {region_id} saved to {store} in "
             f"{(datetime.datetime.now() - t0).total_seconds():.1f}s ({size_mb:.1f} MB); "
             f"total {(datetime.datetime.now() - region_start).total_seconds():.1f}s ----"
         )
 
-    return filename
+    return store
 
 
 def extract_single(
@@ -493,7 +513,12 @@ def extract_single(
     scratch_root = resolve_config_value(cfg.get("scratch_path", ""), cfg.data)
     if scratch_dir is None:
         scratch_dir = os.path.join(scratch_root, "files")
-    os.makedirs(scratch_dir, exist_ok=True)
+    # exist_ok=True isn't race-safe on parallel scratch: concurrent array
+    # tasks can lose the mkdir and see a stale isdir(), so ignore EEXIST.
+    try:
+        os.makedirs(scratch_dir, exist_ok=True)
+    except FileExistsError:
+        pass
 
     levels = source.levels()
     if target is None:
