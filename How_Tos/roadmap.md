@@ -1,13 +1,9 @@
-# extract_UM_met — Development Roadmap
+# Roadmap
 
 Status, remaining work, and open questions for the `extract_um_met` package. This
-file is the **planning** document; for how to install, configure, and run the
-tool, and for the codebase map, see [`How_Tos/`](https://github.com/elenafillo/extract_UM_met/tree/zarr_stores/How_Tos/):
-
-- [how_to_setup.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_setup.md) — environment & config
-- [how_to_datatypes.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_datatypes.md) — data types, grids, regions
-- [how_to_extract.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_extract.md) — the CLI
-- [how_to_code.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_code.md) — module map & pipeline
+is the **planning** document — for how to install, configure and run the tool see
+[setup.md](setup.md) and [extracting.md](extracting.md), and for the codebase map
+[codebase.md](codebase.md).
 
 ---
 
@@ -16,12 +12,13 @@ tool, and for the codebase map, see [`How_Tos/`](https://github.com/elenafillo/e
 **Working end to end (Global UM):** config → per-region extraction → join →
 yearly Zarr append, with resume, three grid modes, single-day smoke test,
 `make-native-grid`, and CF/provenance metadata. Global Mk6–Mk12 (2011-01 onward)
-are extractable. Mk10 onward is N1280 (0.09375° × 0.140625°), roughly 2.8× the
-points of Mk8/9, so post-2017-07 runs are correspondingly heavier.
+are extractable. Mk10 onward is N1280 (0.09375° × 0.140625°), ~1.67× finer per
+axis and ~2.8× the points of Mk8/9, so post-2017-07 runs are correspondingly
+heavier.
 
 **Data-type abstraction landed:** the pipeline dispatches on a `MetSource`
 descriptor (`extract_um_met/sources.py`) instead of hardcoding the global UM.
-`UM_Global`, `UM1p5km`, and `NZCSM` are registered; archive paths are set per
+`UM_Global`, `UM1p5km` and `NZCSM` are registered; archive paths are set per
 environment in `config.yaml → data_types:`.
 
 **Recently completed**
@@ -36,6 +33,12 @@ environment in `config.yaml → data_types:`.
   fields (12-variable output for `UM_Global`).
 - Name-based cube selection (`_pick`) — raises on a changed archive instead of
   silently mis-selecting.
+- Per-domain `output_chunks`, and `model_levels: all`.
+- SLURM scripts under `scripts/`: a parallel per-(month, region) array with a
+  dependent join (`launch_met_array.sh`), plus a serial single-job launcher
+  (`launch_met.sh`).
+- Documentation site (Sphinx + Shibuya, deployed to GitHub Pages), restructured
+  into setup / extracting / concepts / reference / troubleshooting / codebase.
 
 ---
 
@@ -75,42 +78,22 @@ environment in `config.yaml → data_types:`.
 - `environment.yml` — pin the tested stack (Python 3.12, xarray 2025.7.0, dask
   2025.5.1, zarr 3.0.10, iris 3.12.2, numpy 2.2.6). Today the supported
   environment is JASMIN's `jaspy` module.
-- `scripts/` SLURM templates using the new CLI:
-  `run_year.slurm` (array over domain/year) and `make_native_grid.slurm`. The
-  root `run_*_job.txt` files are the deprecated pre-refactor originals.
-- Remove/shim the legacy root files once callers are migrated:
-  `met_functions.py`, `satellite_met_1b1_fixed_v3.py`, `satellite_met_join_v2.py`
-  (+ `copy`), `data_utils/convert_met_to_zarr.py`, `Untitled.ipynb`, the old job
-  `.txt` files.
+- The pre-refactor scripts and exploratory notebooks are no longer tracked —
+  they survive only in local working copies and in git history. Nothing further
+  to do unless a caller still imports one.
 
----
-
-## Roadmap phases
-
-### Phase 1 — Core extraction & joining ✓ DONE
-`extract.py`, `join.py`, `metadata.py`, `zarr_io.py`, and the
-`run`/`extract`/`make-native-grid` CLI are implemented and wired together, with
-name-based cube selection, CF/provenance metadata, and the forecast provenance
-coords.
-
-### Phase 2 — Documentation & deployment  (in progress)
-- ✓ Rewrite `README.md`; add the `How_Tos/` guides.
-- ☐ `environment.yml` (pin producer versions).
-- ☐ SLURM templates under `scripts/`.
-- ☐ Clean up the legacy root files.
-
-### Phase 3 — Testing & validation
-- ☐ Single-month smoke test: `run --domain SA --date 201601`; open the store and
+### Testing & validation
+- Single-month smoke test: `run --domain SA --date 201601`; open the store and
   check dims, vars, `time` coverage, provenance attrs.
-- ☐ Append correctness: full year, confirm 12 months; re-run confirms resume;
+- Append correctness: full year, confirm 12 months; re-run confirms resume;
   `--overwrite` confirms rebuild.
-- ☐ Format round-trip: read a `zarr_format=2` store from both zarr 2.18.7 and
+- Format round-trip: read a `zarr_format=2` store from both zarr 2.18.7 and
   zarr 3.x environments.
-- ☐ Value parity: compare one (domain, month) against a known-good monthly
-  NetCDF.
-- ☐ Grid modes: footprint vs native on the same small domain (native → native
+- Value parity: compare one (domain, month) against a known-good monthly NetCDF.
+- Grid modes: footprint vs native on the same small domain (native → native
   lat/lon, no interp; footprint → today's grid).
-- ☐ SLURM deployment: submit one (domain, year); confirm the store lands in
+- SLURM deployment: submit one (domain, year) through
+  `scripts/launch_met_array.sh`; confirm the store lands in
   `zarr_save_directory`.
 
 ---
@@ -134,4 +117,8 @@ coords.
 - **Variable selection** excludes the 1.5 m `air_temperature` (exact parity with
   the original script). Selection is by name + level presence, so an archive or
   iris-ordering change raises a clear error rather than mis-selecting.
-</content>
+- **Parallel extraction and `native` mode do not mix.** `run` snaps a year to one
+  canonical Mk grid while a standalone `extract` uses each month's own Mk, so
+  per-region array tasks would land on different grids and the join would produce
+  a mixed-grid store. `launch_met_array.sh` refuses native domains for this
+  reason; resolving it means teaching `extract` the year's canonical grid.

@@ -1,262 +1,89 @@
-# How To: Understand the Data Types & Grids
+# Reference: variables, levels & output
 
-What you can extract, how the raw UM archive is organised, and how the target
-grid is built. Read this to decide **which data type, domain and grid mode** to
-put in your config before running.
+Lookup tables for what a store contains and how to change it: the extracted
+variables, the coordinates and attributes that come with them, how to override
+the selection, the on-disk format and chunking, and the full raw UM inventory.
 
-> **See also:** [how_to_setup.md](how_to_setup.md) (environment + config) and
-> [how_to_extract.md](how_to_extract.md) (the commands).
-
----
-
-## 1. Data types (sources)
-
-A **data type** (a `MetSource`, defined in `extract_um_met/sources.py`) is one met
-product. They differ on almost every axis — archive layout, filename pattern, Mk
-calendar, grid projection, region scheme, level count, cadence, compression, and
-whether they are *tiled* (many region files that must be joined) or a single file
-per timestep. The pipeline dispatches on these properties instead of hardcoding
-one product.
-
-| Data type | Archive | Grid | Regions | Tiled? | Levels | Cadence | Mk calendar | Status |
-| --------- | ------- | ---- | ------- | ------ | ------ | ------- | ----------- | ------ |
-| **`UM_Global`** | `…/met_archive/Global/` | regular lat/lon | `world14` (14 tiles) | yes → join | L59 | 3-hourly | Mk6–12 | **working** (Mk6–12) |
-| **`UM1p5km`** | `…/met_archive/LimitedArea/` | rotated pole | `uk16` (16 UK tiles) | yes → join | L57 | 1-hourly | Mk2–4 (Mk4 confirmed) | region bounds **not generated yet** |
-| **`NZCSM`** | TBD (config) | rotated pole | none (one file) | no join | L70 | 1-hourly | none | **partial** (12 vars ship; stresses deferred) |
-
-A domain picks its data type with `data_type:` in config (default `UM_Global`
-if omitted). Structural properties above are code-defined. What you *can* set per
-data type in `config.yaml → data_types:` is the **archive path**, and which
-**variables** and **model levels** to extract (§6). A domain separately sets the
-**output chunking** of its store (§7).
-
-- **Tiled** sources (`UM_Global`, `UM1p5km`) split the globe/UK into region
-  files. A domain names the regions it needs (`world_regions_codes`), the
-  pipeline extracts each, then **joins** them into the domain.
-- **Non-tiled** sources (`NZCSM`) deliver one file covering the whole domain per
-  timestep — no join; the run extracts and appends a day at a time.
+> **See also:** [concepts.md](concepts.md) for what the data types, Mk blocks,
+> regions and grid modes *are* — read that first if you are deciding what to
+> extract. This page is for looking things up once you are.
 
 ---
 
-## 2. The Global UM archive (`UM_Global`)
+## 1. What a store contains
 
-Hosted on JASMIN at `/gws/ssde/j25a/name/met_archive/Global/`. From 2011 the UM
-is released in **"Mk" blocks**, in folders `UMG_Mk{N}PT/`. Each Mk covers a time
-period at a given native resolution:
+### Variables
 
-| Mk | Dates | Native (Δlat × Δlon) | Grid size (lat × lon) |
-| --- | ----- | -------------------- | --------------------- |
-| Mk6 | Jan 2011 – Apr 2013 | 0.234375° × 0.351562° | 769 × 1024 |
-| Mk7 | May 2013 – Jun 2014 | 0.234375° × 0.351562° | 769 × 1024 |
-| Mk8 | Jul 2014 – Jul 2015 | 0.15625° × 0.234375° | 1152 × 1536 |
-| Mk9 | Aug 2015 – Jun 2017 | 0.15625° × 0.234375° | 1152 × 1536 |
-| Mk10 | Jul 2017 – May 2022 | 0.09375° × 0.140625° | 1920 × 2560 |
-| Mk11 | Jun 2022 – Jan 2026 | 0.09375° × 0.140625° | 1920 × 2560 |
-| Mk12 | Feb 2026 – | 0.09375° × 0.140625° | 1920 × 2560 |
+`UM_Global` extraction keeps **12 variables**, all from the `I` variable set.
+Units are whatever the archive carries, passed through by iris unchanged.
 
-**Availability:** Mk6–Mk12 (2011-01 onward) are all extractable. Every grid size
-above is what `make-native-grid` actually stitches from the 14 region files, not
-a nominal figure.
+| Variable | Units | On model levels? | How it is produced |
+| -------- | ----- | ---------------- | ------------------ |
+| `air_pressure` | Pa | yes | instantaneous, mass grid |
+| `air_pressure_at_sea_level` | Pa | no | instantaneous, mass grid |
+| `air_temperature` | K | yes | instantaneous, mass grid |
+| `atmosphere_boundary_layer_thickness` | — | no | instantaneous, mass grid |
+| `specific_humidity` | kg kg-1 | yes | instantaneous, mass grid |
+| `surface_air_pressure` | Pa | no | instantaneous, mass grid |
+| `upward_air_velocity` | m s-1 | yes | instantaneous, mass grid |
+| `x_wind` | m s-1 | yes | staggered → interpolated onto the mass grid |
+| `y_wind` | m s-1 | yes | staggered → interpolated onto the mass grid |
+| `surface_upward_sensible_heat_flux` | W m-2 | no | 3-hour mean, re-stamped to interval end |
+| `atmosphere_downward_eastward_stress` | Pa | no | 3-hour mean, re-stamped to interval end |
+| `atmosphere_downward_northward_stress` | Pa | no | 3-hour mean, re-stamped to interval end |
 
-Mk10 is a **resolution jump**: the global model moves from N768 (Mk8/9) to N1280,
-so Δlat/Δlon halve and the grid is ~2.8× more points per level. Mk11 and Mk12
-stay on N1280. Expect longer extractions, larger intermediates and bigger Zarr
-stores for any date from 2017-07 onward.
+The three production kinds correspond one-to-one to the config keys you override
+in [§2](#2-choosing-your-own-variables-and-levels): `mass_vars`, `wind_vars`, and
+`averaged_mass_vars` / `averaged_staggered_vars`. Selection is by **name + level
+presence**.
 
-Mk blocks overlap slightly in the archive (e.g. `UMG_Mk11PT/` starts at 2022-04 while
-Mk10 runs to 2022-05, and `UMG_Mk12PT/` starts at 2025-12 while Mk11 runs to
-2026-01). The boundaries in the table are the ones used in the code via `get_Mk`: the switch happens the month after the previous block's last full month.
+### Dimensions and coordinates
 
-Note that the Mk boundary for a date is resolved in code (`iris_io.get_Mk`); you never set it manually — just give a `--date`.
+Dims are `time × levels × lat × lon`. CF attributes are set by
+`metadata.apply_cf_metadata`:
 
-### Filename pattern
+| Coord | A dimension? | Meaning |
+| ----- | ------------ | ------- |
+| `time` | yes | validity time; `standard_name: time`, `axis: T` |
+| `levels` | yes | UM model level number, subsampled (see below); `positive: up` |
+| `lat` | yes | `degrees_north`, `axis: Y` |
+| `lon` | yes | `degrees_east`, `axis: X` |
+| `forecast_reference_time` | no — indexed by `time` | model run (analysis) reference time |
+| `forecast_period` | no — indexed by `time` | time since the forecast reference time |
 
-```
-MO{YYYYMMDD}{HHMM}.UMG_Mk{N}_{set}_L59PT{region}.pp[.gz]
-      e.g.  MO201403080000.UMG_Mk7_I_L59PT10.pp
-```
+The two forecast coords are retained as time-indexed **provenance**, not as
+dimensions: they record which model run each timestep came from.
 
-- `HHMM` — sub-daily period: `0000, 0300, … 2100` (3-hourly → 8 files/day).
-- `{set}` — variable set token `I` or `M` (see below). *(Mk6 files omit the
-  `_I_` token — handled automatically.)*
-- `{region}` — world region `1`–`14` (see §4).
-- Mk6–Mk9 files are **gzipped** (`.pp.gz`) and are decompressed under
-  `scratch_path` before reading; Mk10–Mk12 are plain `.pp`.
+**Model levels** are subsampled — level 1 plus every 3rd level up to L59, i.e.
+`[1, 3, 6, 9, …, 57]` (`level_stride`, default 3).
 
----
+### Global attributes
 
-## 3. Grid modes
+CF attributes, written from the config `metadata:` block — empty config fields
+are omitted rather than written blank:
 
-Every domain is extracted onto a **target grid** chosen by its `grid.mode`
-(built in `extract_um_met/grid.py`). Set this per domain in config:
+`Conventions` · `title` · `institution` · `source` · `references` · `history` ·
+`comment` · `author` · `grid_mode` · `mk_version` · `data_type` ·
+`delta_lat` / `delta_lon` (mean grid spacing)
 
-| Mode | Target grid | Interpolates? | Needs |
-| ---- | ----------- | ------------- | ----- |
-| **`footprint`** (default) | a reference footprint's lat/lon, padded outward by edge cells | yes | `footprint:` file + `edge_size_lat/lon` |
-| **`regular`** | `np.arange` mesh from bounds + step | yes | `lat_bounds`, `lon_bounds`, `dlat`, `dlon` |
-| **`native`** | the saved native UM grid (subset to bounds) | **no** (passthrough on matching Mk) | pre-built native grids in `data/` |
+Provenance and completeness attributes, written by `zarr_io.finalize_attrs`
+after each year:
 
-If a domain has no `grid:` block, it defaults to **footprint** with the domain's
-`footprint` key and `default_edge_size`.
+`created_by` · `created_at` · `time_start` · `time_end` ·
+`n_time` / `n_lat` / `n_lon` / `n_levels` · `zarr_chunks` · `months_present` ·
+`n_months_present` · `missing_months` · `year_complete`
 
-**Footprint mode** loads the reference footprint, crops it to where measurements
-actually are (`release_lat/lon` if present), takes its native lat/lon, then pads
-outward by `edge_size_*` cells using the NAME reference spacing (Δlat 0.234,
-Δlon 0.352). This reproduces the original extraction behaviour.
+`year_complete` and `missing_months` are the quickest check that a year finished:
 
-**Native mode** snaps a whole year to **one canonical Mk grid** (the majority Mk
-by month count) so time-appends stay aligned; months already on that Mk pass
-through untouched, off-Mk months are interpolated onto it.
-
-> ⚠️ **Native-mode cropping gap:** `lat_bounds`/`lon_bounds` in a `native` block
-> currently shape only the canonical target grid — extraction still passes each
-> region through at its full region extent (sliced to region bounds only), so a
-> native domain is not yet cropped to a tight bounding box. Footprint/regular
-> modes are unaffected. (Known limitation; see `usage.md`.)
-
-### Grid spec examples (config)
-
-```yaml
-# footprint (default)
-grid:
-  mode: footprint
-  footprint: "GOSAT-BRAZIL-column_SOUTHAMERICA_201801.nc"
-  edge_size_lat: [100, 100]
-  edge_size_lon: [85, 100]
-
-# regular
-grid:
-  mode: regular
-  lat_bounds: [-25, 15]
-  lon_bounds: [-75, -30]
-  dlat: 0.234
-  dlon: 0.352
-
-# native
-grid:
-  mode: native
-  lat_bounds: [-17, 59]
-  lon_bounds: [45, 127]
-  native_grid: majority   # or "latest", "Mk9", etc.
+```python
+import xarray as xr
+ds = xr.open_zarr(".../SOUTHAMERICA/SOUTHAMERICA_Met_2016.zarr")
+ds.attrs["year_complete"], ds.attrs["missing_months"]
 ```
 
 ---
 
-## 4. World regions (the `world14` scheme)
-
-Tiled Global data is split into **14 world regions**. A domain lists the ones it
-overlaps in `world_regions_codes`; the pipeline extracts each and joins them.
-Bounds are `[min_lat, max_lat, min_lon, max_lon]` (from
-`extract_um_met/regions.py`):
-
-| Region | Lat band | Lon band | Notes |
-| ------ | -------- | -------- | ----- |
-| 1  | 79.9 … 90.0 | polar cap | North pole |
-| 2  | 25.0 … 80.0 | −45 … 45 | |
-| 3  | 25.0 … 80.0 | 45 … 135 | |
-| 4  | 25.0 … 80.0 | 135 … −135 | crosses dateline |
-| 5  | 25.0 … 80.0 | −135 … −45 | |
-| 6  | −25.1 … 25.1 | −45 … 45 | equatorial |
-| 7  | −25.1 … 25.1 | 45 … 135 | equatorial |
-| 8  | −25.1 … 25.1 | 135 … −135 | equatorial, crosses dateline |
-| 9  | −25.1 … 25.1 | −135 … −45 | equatorial |
-| 10 | −80.0 … −25.0 | −45 … 45 | |
-| 11 | −80.0 … −25.0 | 45 … 135 | |
-| 12 | −80.0 … −25.0 | 135 … −135 | crosses dateline |
-| 13 | −80.0 … −25.0 | −135 … −45 | |
-| 14 | −90.0 … −79.9 | polar cap | South pole |
-
-![The 14 world regions](https://github.com/user-attachments/assets/f6dc8296-f87f-4d82-bcf5-533147d8e9a3)
-
-Grid layout (matches the region numbering above):
-
-```
-        -180        -45     45      135    180
-  +90    ┌───────────── 1 (N pole) ──────────────┐
-         │   5    │   2    │   3    │   4   │      (mid-N)
-  +25    ├────────┼────────┼────────┼───────┤
-         │   9    │   6    │   7    │   8   │      (equator)
-  -25    ├────────┼────────┼────────┼───────┤
-         │  13    │  10    │  11    │  12   │      (mid-S)
-  -80    └───────────── 14 (S pole) ─────────────┘
-```
-
-To find which regions a bounding box needs, use
-`regions.find_overlapping_regions(min_lat, max_lat, min_lon, max_lon)`.
-
-Existing domains in the config and their regions:
-
-| Domain | `domain_name` | Regions | Mode |
-| ------ | ------------- | ------- | ---- |
-| `SA` | SOUTHAMERICA | 6, 9, 10, 13 | footprint |
-| `NA` | NORTHAFRICA | 2, 3, 6, 7 | footprint |
-| `CHINA` | CHINA | 3, 4, 7, 8 | footprint |
-| `INDIA` | INDIA | 3, 7 | footprint |
-| `NZ` | NEWZEALAND | — (NZCSM, non-tiled) | regular |
-
-To extract an existing domain on a different grid, don't add a second domain —
-run it with `--grid-mode` and a `--suffix` so the variant lands beside the main
-store — see the `--suffix` section of [how_to_extract.md](how_to_extract.md).
-
----
-
-## 5. Native grids (`data/`)
-
-Native grids are the true UM lat/lon per Mk, saved for reference and for
-`native`-mode extraction. `data/` is **empty on a fresh clone** — the grids are
-regenerable and git-ignored, so build them with `make-native-grid` before your
-first `native`-mode run (see [how_to_setup.md](how_to_setup.md#5-generate-native-grids-one-off)):
-
-```bash
-python -m extract_um_met make-native-grid              # all Mks (6–12)
-python -m extract_um_met make-native-grid --mk 9       # one Mk
-python -m extract_um_met make-native-grid --dry-run    # inspect, no write
-```
-
-Each Mk is read from one known sample timestep (`cli.MK_SAMPLE_TIMESTEPS`); the
-grid is fixed within an Mk block, so which timestep does not matter. Naming it
-also keeps the command off a directory listing — the Mk10–12 folders hold
-hundreds of thousands of files.
-
-Per Mk this writes into `data/`:
-
-- `native_grid_Mk{N}_region{01..14}.nc` — per-region grids
-- `native_grid_Mk{N}_global.nc` — stitched global grid
-- `native_grid_Mk{N}_info.yaml` — resolutions + point counts (e.g. Mk9 global is
-  1152 × 1536 at 0.15625° × 0.234375°)
-
-**Why it matters:** resolution changes at Mk boundaries (Mk6/7 coarse → Mk8/9
-fine → Mk10–12 finer still). Footprint and regular modes always interpolate onto
-a fixed target, so they are immune. Native mode snaps to one canonical Mk grid
-and only interpolates off-resolution months — which now costs more, since a year
-spanning the 2017-07 boundary mixes N768 and N1280 months.
-
----
-
-## 6. What variables get extracted
-
-For `UM_Global` (the `I` variable set), extraction keeps **12 variables**,
-selected by name + level presence (not file order), so a changed archive raises a
-clear error instead of silently mis-picking. Groups (from `sources.py`):
-
-**Mass variables** (already on the mass grid; L = has model levels):
-`air_pressure` (L), `air_pressure_at_sea_level`, `air_temperature` (L),
-`atmosphere_boundary_layer_thickness`, `specific_humidity` (L),
-`surface_air_pressure`, `upward_air_velocity` (L).
-
-**Winds** (staggered; interpolated onto the mass grid):
-`x_wind` (L), `y_wind` (L).
-
-**Time-averaged surface fields** (3-hour means, timestamp re-stamped to the
-interval end):
-`surface_upward_sensible_heat_flux`;
-`atmosphere_downward_eastward_stress`, `atmosphere_downward_northward_stress`.
-
-**Model levels** are subsampled: level 1 plus every 3rd level up to L59 →
-`[1, 3, 6, 9, …, 57]` (`level_stride`). Output renames coords to `lat` / `lon` /
-`levels`.
-
-### Choosing your own variables and levels
+## 2. Choosing your own variables and levels
 
 The lists above are defaults, not fixed: both are overridable per data type under
 `config.yaml → data_types:`, no code change needed.
@@ -287,7 +114,7 @@ data_types:
 | `model_levels` | `"all"` | every level the source has (L59 global, L70 NZCSM) |
 
 Cube names must match the archive's iris names exactly — pick them from the
-[inventory in §8](#8-raw-um-variable-inventory). Any variable group may be set to
+[inventory in §3](#3-raw-um-variable-inventory). Any variable group may be set to
 `[]` to drop it entirely.
 
 Two things to watch. Editing these changes **every** run using that config, so
@@ -296,68 +123,12 @@ editing in place. And because stores are appended to per month, changing the
 variable or level selection part-way through a year will not line up with the
 months already written — rebuild that year with `--overwrite`.
 
-> The full raw UM variable inventory (both `I` and `M` sets, 30 fields) is in
-> [§8 below](#8-raw-um-variable-inventory); only the 12 above are carried into
-> the zarr stores.
-
 ---
 
-## 7. Output
-
-One **yearly Zarr store** per domain/year:
-
-```
-{zarr_save_directory}/{DOMAIN_NAME}/{DOMAIN_NAME}_Met_{YYYY}.zarr
-   e.g.  …/satellite_met_zarr/SOUTHAMERICA/SOUTHAMERICA_Met_2016.zarr
-```
-
-Dims `time × levels × lat × lon`, chunked `{time:1, lat:-1, lon:-1, levels:3}`,
-float32 with zstd Blosc compression, CF metadata + provenance attrs. Single-day
-smoke tests write a separate `…_Met_{YYYYMMDD}.zarr` debug store.
-
-### Choosing the output chunks
-
-The chunk shape above is the default, tuned for the dominant access pattern:
-`time: 1` because scattered single-timestep reads are the common case, levels in
-groups of 3, lat/lon whole. A domain can override it in config:
-
-```yaml
-domains:
-  SA:
-    domain_name: "SOUTHAMERICA"
-    output_chunks:
-      time: 24            # only the dims you name change; the rest keep the default
-```
-
-Keys are `time`, `levels`, `lat`, `lon`; `-1` means one chunk spanning the whole
-dim. An unrecognised key (`latitude:`) raises at config load rather than silently
-leaving the default in place, and `run` prints the resolved chunks before it
-starts.
-
-Which way to go depends on how you read the store: keep `time: 1` for reading
-whole fields at scattered timesteps, and raise it when you mostly pull long time
-series at a few points, which the default makes expensive (one chunk touched per
-timestep).
-
-> **Applies at store creation only.** The chunk layout is fixed when a store is
-> first written; later months inherit it. Changing `output_chunks` for a year
-> that already exists has no effect until you rebuild it with `--overwrite`.
-
-Open one with:
-
-```python
-import xarray as xr
-ds = xr.open_zarr(".../SOUTHAMERICA_Met_2016.zarr")
-print(ds)                 # dims, variables, coords
-print(ds.attrs)           # provenance: months_present, missing_months, grid_mode, …
-```
-
----
-
-## 8. Raw UM variable inventory
+## 3. Raw UM variable inventory
 
 Everything a `UM_Global` `.pp` file carries, by variable set. **✓** marks the 12
-fields extraction keeps (all from the `I` set) — see [§6](#6-what-variables-get-extracted).
+fields extraction keeps (all from the `I` set) — see [§1](#1-what-a-store-contains).
 The rest are read past, not dropped for any quality reason; add one by editing
 the `*_vars` tuples on the `MetSource` in `sources.py`.
 
@@ -387,8 +158,7 @@ The `I` set — instantaneous fields, plus the surface fluxes/stresses:
 Entries 8 and 9 are **both** `air_temperature` — 8 is the 1.5 m diagnostic, 9 is
 the model-level field. This is why selection is by name **plus level presence**
 rather than by name alone, and why `_pick` raises on an archive change instead of
-silently taking the wrong one. Excluding the 1.5 m field keeps exact parity with
-the original pre-refactor script.
+silently taking the wrong one.
 
 The `M` set — cloud and precipitation fields. None are currently extracted:
 
@@ -407,7 +177,107 @@ The `M` set — cloud and precipitation fields. None are currently extracted:
 | 10 | `stratiform_rainfall_flux` | |
 | 11 | `stratiform_snowfall_flux` | |
 
-The set is the `{set}` token in the filename (§2) — a domain-month has an `I`
-file and an `M` file per timestep. Extraction reads only `I` today; pulling `M`
-fields would mean loading the second file too.
-</content>
+The set is the `{set}` token in the filename (see
+[concepts.md](concepts.md#filename-pattern)) — a domain-month has an `I` file and
+an `M` file per timestep. Extraction reads only `I` today; pulling `M` fields
+would mean loading the second file too.
+
+---
+
+## 4. Output format and chunking
+
+One **yearly Zarr store** per domain/year:
+
+```
+{zarr_save_directory}/{DOMAIN_NAME}/{DOMAIN_NAME}_Met_{YYYY}.zarr
+   e.g.  …/satellite_met_zarr/SOUTHAMERICA/SOUTHAMERICA_Met_2016.zarr
+```
+
+Float32 with zstd Blosc compression, CF `time` encoding, NaN fill. Single-day
+smoke tests write a separate `…_Met_{YYYYMMDD}.zarr` debug store, and
+`--suffix TAG` writes `…_{TAG}_Met_{YYYY}.zarr` beside the main store.
+
+`zarr_format` (config, or `--zarr-format`) picks the on-disk version: `2` is
+readable by both zarr 2.18.7 and 3.x, `3` by 3.x only. Per-region scratch
+intermediates are written in the same format, so scratch and output never
+straddle two versions.
+
+### Choosing the output chunks
+
+The default chunk shape is `{time: 1, levels: 3, lat: -1, lon: -1}`, tuned for
+the dominant access pattern: `time: 1` because scattered single-timestep reads
+are the common case, levels in groups of 3, lat/lon whole. A domain can override
+it in config:
+
+```yaml
+domains:
+  SA:
+    domain_name: "SOUTHAMERICA"
+    output_chunks:
+      time: 24            # only the dims you name change; the rest keep the default
+```
+
+Keys are `time`, `levels`, `lat`, `lon`; `-1` means one chunk spanning the whole
+dim. An unrecognised key (`latitude:`) raises at config load rather than silently
+leaving the default in place, and `run` prints the resolved chunks before it
+starts. The shape actually used is recorded on the store as `zarr_chunks`.
+
+Which way to go depends on how you read the store: keep `time: 1` for reading
+whole fields at scattered timesteps, and raise it when you mostly pull long time
+series at a few points, which the default makes expensive (one chunk touched per
+timestep).
+
+> **Applies at store creation only.** The chunk layout is fixed when a store is
+> first written; later months inherit it. Changing `output_chunks` for a year
+> that already exists has no effect until you rebuild it with `--overwrite`.
+
+---
+
+## 5. Scratch intermediates and peak memory
+
+Extraction stages each region into a transient zarr store under
+`{scratch}/files/`, joins them, and appends the result to the yearly store.
+Extraction holds **one period of one region** in memory at a time, so how much
+time one intermediate covers is what sets the pipeline's peak memory. A domain
+chooses it with `intermediate_period`:
+
+```yaml
+domains:
+  SA:
+    domain_name: "SOUTHAMERICA"
+    intermediate_period: week      # month (default) | week | day
+```
+
+| Period | One intermediate covers | Peak memory | Scratch stores per region-month |
+| ------ | ----------------------- | ----------- | ------------------------------- |
+| `month` *(default)* | the whole month | baseline | 1 |
+| `week` | a 7-day block | roughly a quarter of monthly | 5 |
+| `day` | one day | roughly a thirtieth | 28–31 |
+
+Weeks are 7-day blocks **within** the month — 1–7, 8–14, 15–21, 22–28, 29–end,
+so the last block is short. Periods never cross a month boundary, which keeps one
+Mk version per period and leaves the yearly store keyed exactly as before.
+
+**The output is identical either way.** This knob only changes how the work is
+broken up on the way there. The cost of a shorter period is more (smaller)
+scratch stores and more appends to the yearly store.
+
+Reach for it when a large domain runs out of memory — big domains, many model
+levels and fine target grids all push in the same direction. Note that Mk10
+onward is ~2.8× the points of Mk8/9, so a domain that fits monthly in 2016 may
+not in 2018.
+
+### How periods are named
+
+A period covering a whole month is tagged `YYYYMM`, the name monthly
+intermediates have always had, so existing scratch stores stay reusable. Any
+shorter period is tagged with its first day, `YYYYMMDD`:
+
+```
+{scratch}/files/SOUTHAMERICA_Met_201601_6.zarr      # month period
+{scratch}/files/SOUTHAMERICA_Met_20160108_6.zarr    # week period starting the 8th
+```
+
+Resume is driven by the **days actually present** in the yearly store, not by the
+period setting, so changing `intermediate_period` part-way through a year is safe
+— already-written days are skipped either way.

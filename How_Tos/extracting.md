@@ -4,8 +4,8 @@ How to drive the `extract_um_met` CLI: the three subcommands, their options, the
 extract → join → append workflow, resume behaviour, adding a domain, and running
 under SLURM.
 
-> **Before this:** finish [how_to_setup.md](how_to_setup.md) (env + config) and
-> skim [how_to_datatypes.md](how_to_datatypes.md) (data types, grids, domains).
+> **Before this:** finish [setup.md](setup.md) (env + config) and skim
+> [concepts.md](concepts.md) (data types, grids, domains).
 
 **Every command assumes:**
 
@@ -70,10 +70,12 @@ python -m extract_um_met run --domain SA --date 201601 --dry-run
 
 ### Resume semantics
 
-For an existing yearly store (no `--overwrite`):
+For an existing yearly store (no `--overwrite`), resume is driven by the **days
+actually present** in the store:
 
-- Months already present are **skipped**; only later months are appended.
-- Backfilling an **earlier** missing month via append is **not possible** (time
+- Periods whose days are already present are **skipped**; only later ones are
+  appended.
+- Backfilling an **earlier** missing period via append is **not possible** (time
   order must be preserved). The run warns and you rebuild that year with
   `--overwrite`.
 - Re-running a complete year is a no-op (it just re-finalises attrs).
@@ -81,7 +83,10 @@ For an existing yearly store (no `--overwrite`):
 Example — first pass does Jan–Jun, later you run the full year: Jan–Jun are
 skipped, Jul–Dec appended.
 
-### `--suffix` — variant stores side by side
+Because resume reads real timestamps rather than a period counter, changing a
+domain's `intermediate_period` part-way through a year is safe.
+
+### Running a variant side by side
 
 By default a domain's store is `{DOMAIN}/{DOMAIN}_Met_{date}.zarr`. Passing
 `--suffix TAG` tags the **filename** (not the folder) so a variant run lands next
@@ -120,9 +125,11 @@ python -m extract_um_met extract --domain SA --date 20160115 --region 6  # one r
 | `--region` | a single world-region ID; omit to do all of the domain's regions |
 | `--suffix TAG` | tag the intermediate names `{DOMAIN}_{TAG}_Met_...` (same tag `run` uses) |
 
-Each region lands as `{scratch}/files/{DOMAIN}_Met_{date}_{region}.zarr`. On a
+Each region lands as `{scratch}/files/{DOMAIN}_Met_{tag}_{region}.zarr`, where
+`tag` is `YYYYMM` for a whole-month period and `YYYYMMDD` for a shorter one — see
+[reference.md §5](reference.md#5-scratch-intermediates-and-peak-memory). On a
 non-tiled source (e.g. `NZCSM`) there are no regions, so `extract` writes the
-whole domain to a single `{DOMAIN}_Met_{date}.zarr` instead.
+whole domain to a single `{DOMAIN}_Met_{tag}.zarr` instead.
 
 These intermediates are transient (a `run` deletes them after the month appends,
 unless `--keep-intermediates`). They exist to bound peak memory, not as a product.
@@ -131,7 +138,7 @@ unless `--keep-intermediates`). They exist to bound peak memory, not as a produc
 
 ## 4. `make-native-grid` — build native grids
 
-One-off; see [how_to_datatypes.md](how_to_datatypes.md#5-native-grids-data).
+One-off; see [concepts.md](concepts.md#5-native-grids-data).
 
 ```bash
 python -m extract_um_met make-native-grid                        # all Mks
@@ -157,14 +164,15 @@ grid does not vary within an Mk block, so there is nothing to choose.
 python -m extract_um_met run --domain SA --date 2016
    │
    ├─ resolve config, domain, date → 2016-01 … 2016-12, build target grid
+   │  split each month into periods (intermediate_period: month by default)
    │
-   └─ for each month:
+   └─ for each period:
         ├─ extract each world region        (load .pp(.gz) → align winds →
         │                                     build time dim → regrid → slice →
         │                                     write per-region zarr to scratch)
         ├─ join regions → domain Dataset     (concat lat within lon columns, then
         │                                     lon; fill seams; rename; stamp CF)
-        └─ append the month to the yearly zarr store
+        └─ append the period to the yearly zarr store
    finalize provenance/completeness attrs
 
 OUTPUT: {zarr_save_directory}/SOUTHAMERICA/SOUTHAMERICA_Met_2016.zarr
@@ -179,7 +187,7 @@ intermediate is staged, so `--keep-intermediates` does nothing for them.
 ## 6. Add a new domain
 
 Add a block under `domains:` in `config.yaml` (see
-[how_to_datatypes.md](how_to_datatypes.md) for regions and grid modes):
+[concepts.md](concepts.md) for regions and grid modes):
 
 ```yaml
 domains:
@@ -192,9 +200,12 @@ domains:
       edge_size_lat: [100, 100]
       edge_size_lon: [85, 100]
     # Optional: on-disk chunking of this domain's store; omitted dims keep the
-    # default {time: 1, levels: 3, lat: -1, lon: -1}. See how_to_datatypes.md §7.
+    # default {time: 1, levels: 3, lat: -1, lon: -1}. See reference.md §4.
     # output_chunks:
     #   time: 24
+    # Optional: how much time one scratch intermediate covers. Shorten it if a
+    # big domain runs out of memory. See reference.md §5.
+    # intermediate_period: week        # month (default) | week | day
 ```
 
 Then dry-run, then smoke-test a single day, then run for real:
@@ -216,46 +227,76 @@ find_overlapping_regions(min_lat=-25, max_lat=15, min_lon=-75, max_lon=-30)
 
 ## 7. Run under SLURM
 
-Extraction is memory-heavy (a month of a multi-region domain can want 100+ GB).
-On JASMIN submit it as a batch job rather than running long jobs on the login
-node. A minimal template using the current CLI:
+Extraction is memory-heavy — a month of a multi-region domain can want 100+ GB —
+so on JASMIN submit it as a batch job rather than running it on a login node.
+The repo ships the job scripts under `scripts/`; you should not need to write
+your own.
+
+### Parallel: one array task per (month, region)
+
+`scripts/launch_met_array.sh` is the normal way to do a year. It splits the work
+so each array task extracts **one region of one month** into a scratch
+intermediate, then submits a dependent job that joins them and appends each month
+to the yearly store:
 
 ```bash
-#!/bin/bash
-#SBATCH -p standard
-#SBATCH --account=acrg
-#SBATCH --qos=standard
-#SBATCH --mem=200GB
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --job-name=SA_2016
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
-#SBATCH -t 08:00:00
-
-cd /home/users/$USER/extract_UM_met
-module purge
-module load jaspy
-export TMPDIR=/work/scratch-pw5/$USER/tmp
-mkdir -p "$TMPDIR"
-
-python -m extract_um_met run --domain SA --date 2016
+bash scripts/launch_met_array.sh 2015 NA            # a full year
+bash scripts/launch_met_array.sh 201501 NA          # a single month
+bash scripts/launch_met_array.sh 2015 NA coarse     # → NORTHAFRICA_coarse_Met_2015.zarr
 ```
 
-Submit with `sbatch your_job.slurm`. To parallelise across months, use a SLURM
-array and map `$SLURM_ARRAY_TASK_ID` (1–12) to a `--date YYYYMM`:
+Run it **on a login node** — it submits jobs, it is not itself a batch script. It
+reads the domain's region codes and grid mode from `config.yaml` through the
+package itself, so the domain table is never duplicated in the scripts. Account,
+QoS, partition and the concurrency cap are set at the top of the script.
+
+It submits two jobs:
+
+| Script | Job | Sizing |
+| ------ | --- | ------ |
+| `scripts/extract_region.sbatch` | array, one task per (month, region) | 200 GB, 6 CPUs, 3 h, max 12 concurrent |
+| `scripts/join_year.sbatch` | one serial job, `afterok` the array | 150 GB, 6 CPUs, 8 h |
+
+The join stays serial because months must be appended in **time order**. It runs
+the ordinary `run` command, which reuses the intermediates the array already
+wrote instead of re-extracting them.
+
+Logs land in `scripts/logs/`; watch progress with `squeue -u $USER`.
+
+The launcher **refuses two cases on purpose**:
+
+- **Non-tiled domains** (e.g. `NZ` / NZCSM) — there are no regions to split
+  across array tasks.
+- **`native` grid mode** — `run` snaps a whole year to one canonical Mk grid,
+  while a standalone `extract` uses each month's own Mk. The intermediates would
+  land on different grids and the join would silently produce a mixed-grid store.
+
+For either, use a single serial job.
+
+### Serial: one job for the whole run
+
+For a single month, a smoke test, a non-tiled domain, or native mode,
+`scripts/launch_met.sh` runs the command end to end in one job. **Submit it from
+the repo root** — it `cd`s to `$SLURM_SUBMIT_DIR`, which is where `config.yaml`
+is read from:
 
 ```bash
-#SBATCH --array=1-12
-month=$(printf "%02d" "$SLURM_ARRAY_TASK_ID")
-python -m extract_um_met run --domain SA --date "2016${month}"
+sbatch scripts/launch_met.sh 2016 SA
+sbatch scripts/launch_met.sh 201601 SA
+sbatch scripts/launch_met.sh 20160115 SA          # single-day smoke test
+sbatch scripts/launch_met.sh 2016 NA coarse       # → NORTHAFRICA_coarse_Met_2016.zarr
 ```
 
-> **Note:** the old `run_single_job.txt` / `run_parallel_job.txt` templates in the
-> repo root call the deprecated `satellite_met_1b1_fixed_v3.py` /
-> `satellite_met_join_v2.py` scripts — **not** the `extract_um_met` package. Use the
-> template above instead. (Array-appending months in parallel can race the zarr
-> store; prefer running one year sequentially, or one array task per year.)
+Arguments are `DATE` (required), `DOMAIN` (default `SA`) and `SUFFIX` (optional).
+Two flags are opt-in:
+
+```bash
+sbatch -J SA2016 scripts/launch_met.sh 2016 SA                       # readable job name
+sbatch --export=ALL,OVERWRITE=1 scripts/launch_met.sh 2016 SA        # rebuild, don't resume
+```
+
+It defaults to **resuming**, matching the CLI. Sizing is 200 GB, 5 CPUs, 8 h —
+edit the `#SBATCH` lines if your domain needs more.
 
 ---
 
@@ -269,22 +310,22 @@ print(ds.time.values[[0, -1]])  # coverage
 print(ds.attrs["months_present"], ds.attrs["missing_months"], ds.attrs["year_complete"])
 ```
 
-Provenance attrs (`grid_mode`, `months_present`, `missing_months`,
-`year_complete`, `time_start/end`, native-grid info, …) are written by
-`finalize_attrs` after each year. There is also a `check_met_files.py` helper and
-notebooks under `notebooks/` for validation.
+The full list of coordinates and attributes a store carries is in
+[reference.md §1](reference.md#1-what-a-store-contains). To check archive
+coverage before or after a run, there is a `check_met_files.py` helper.
 
 ---
 
-## 9. Common issues
+## 9. When something goes wrong
 
-| Symptom | Likely cause / fix |
-| ------- | ------------------ |
-| `config.yaml did not parse` / domain not found | not in the repo root, or no `config.yaml` — `cp config.example.yaml config.yaml` |
-| "missing files" past the newest Mk block | the archive has moved to a new Mk — extend `iris_io.get_Mk` and `cli.MK_SAMPLE_TIMESTEPS` (see [datatypes](how_to_datatypes.md#2-the-global-um-archive-um_global)) |
-| dates ≥ 2017-07 much slower / larger than expected | Mk10 onward is N1280, ~2.8× the points of Mk8/9 — not a fault |
-| Node `/tmp` fills / decompression fails | `TMPDIR` not set to scratch — see [setup §3](how_to_setup.md#3-set-tmpdir-to-scratch) |
-| "cannot backfill earlier missing month" | append needs time order — rerun the year with `--overwrite` |
-| `Native grid not found for Mk N` | run `make-native-grid --mk N` first |
-| Out-of-memory in SLURM | raise `--mem`; do a month at a time; keep intermediates off |
+Start with `--dry-run` to separate configuration problems from data problems,
+then a single-day run as the cheapest real test:
+
+```bash
+python -m extract_um_met run --domain SA --date 201601 --dry-run
+python -m extract_um_met run --domain SA --date 20160115
+```
+
+Error messages, causes and fixes are collected in
+[troubleshooting.md](troubleshooting.md).
 </content>

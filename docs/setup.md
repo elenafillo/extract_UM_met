@@ -1,3 +1,3 @@
-```{include} ../How_Tos/how_to_setup.md
+```{include} ../How_Tos/setup.md
 :parser: myst
 ```

@@ -4,8 +4,9 @@ First-time setup on JASMIN: load the Python environment, create your temp
 directory, and write your personal `config.yaml`. Do this once per account; after
 that you only touch `config.yaml` when you add a domain or change a path.
 
-> **See also:** [how_to_datatypes.md](how_to_datatypes.md) (what data/grids exist)
-> and [how_to_extract.md](how_to_extract.md) (running the extraction).
+> **See also:** [concepts.md](concepts.md) (what data/grids exist) and
+> [extracting.md](extracting.md) (running the extraction). If something breaks,
+> [troubleshooting.md](troubleshooting.md).
 
 ---
 
@@ -88,7 +89,7 @@ cp config.example.yaml config.yaml
 ```
 
 Then edit `config.yaml`. The shared structure (domains, data-type paths, grid
-specs) is versioned in [`config.example.yaml`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/config.example.yaml); the only
+specs) is versioned in {src}`config.example.yaml`; the only
 strictly personal field is `met_extract_author`.
 
 ### Fields to check / fill
@@ -143,10 +144,10 @@ data_types:
 
 The same block optionally takes which **variables** and **model levels** to
 extract — both defaulted, so you can leave them out until you need them. See
-[how_to_datatypes.md](how_to_datatypes.md) for what each type is and
-[§6 there](how_to_datatypes.md#6-what-variables-get-extracted) for the tuning keys.
-The chunking of a domain's output store is set separately, per domain — see
-[§7](how_to_datatypes.md#7-output).
+[concepts.md](concepts.md) for what each type is and
+[reference.md §2](reference.md#2-choosing-your-own-variables-and-levels) for the
+tuning keys. The chunking of a domain's output store is set separately, per
+domain — see [reference.md §4](reference.md#4-output-format-and-chunking).
 
 ---
 
@@ -163,7 +164,7 @@ This writes `data/native_grid_Mk{6..12}_*.nc` plus `_info.yaml` metadata. Each M
 is read from one known sample timestep (`cli.MK_SAMPLE_TIMESTEPS`) — the grid is
 fixed within an Mk block, so the choice does not matter, and naming it avoids
 listing the Mk10–12 folders, which hold hundreds of thousands of files. See
-[how_to_datatypes.md](how_to_datatypes.md#5-native-grids-data).
+[concepts.md](concepts.md#5-native-grids-data).
 
 Gzipped Mk6–9 files are decompressed into `scratch_path` from `config.yaml`, not
 `/tmp` — JASMIN's `/tmp` is a 2 GB tmpfs and is routinely full.
@@ -186,7 +187,7 @@ python -m extract_um_met run --domain SA --date 20160115
 ```
 
 If that produces a `…_Met_20160115.zarr`, your environment, paths and config are
-good. Move on to [how_to_extract.md](how_to_extract.md) for real runs.
+good. Move on to [extracting.md](extracting.md) for real runs.
 
 ---
 
