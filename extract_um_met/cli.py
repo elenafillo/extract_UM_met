@@ -30,6 +30,7 @@ from .regions import get_saved_region_bounds
 from .grid import extract_native_grid, save_native_grid, build_target_grid
 from .extract import extract_region, extract_single
 from .join import join_month, cleanup_region_intermediates
+from .periods import period_chunks, period_tag, resolve_intermediate_period
 from .sources import get_source
 from .zarr_io import append_month_to_year_store, finalize_attrs, resolve_output_chunks
 
@@ -417,17 +418,6 @@ def _parse_date_arg(date_str):
     raise ValueError(f"Could not parse --date '{date_str}'. Use YYYY, YYYYMM, or YYYYMMDD.")
 
 
-def _read_present_months(store_path, year):
-    """Return the set of 'MM' strings already present in a yearly zarr store."""
-    try:
-        with xr.open_zarr(str(store_path), consolidated=True) as ds:
-            times = np.asarray(ds.time.values).astype("datetime64[s]")
-        return {str(t)[5:7] for t in times if str(t)[:4] == str(year)}
-    except Exception as exc:
-        print(f"  WARNING: could not read existing store {store_path}: {exc}")
-        return set()
-
-
 def _expand_days(periods):
     """Expand (year, month, day|None) periods into a list of (year, 'YYYYMMDD')."""
     out = []
@@ -572,7 +562,7 @@ def _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
 
     day_ds = join_month(
         domain_key, year, month, cfg,
-        target=target, use_interp=use_interp, scratch_dir=scratch_dir, day=day,
+        target=target, use_interp=use_interp, scratch_dir=scratch_dir, days=[tag],
         source=source, suffix=suffix,
     )
     append_month_to_year_store(day_ds, store_path, zarr_format=zarr_format, first=True,
@@ -580,8 +570,7 @@ def _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
     print(f"    wrote {tag} to {store_path}")
 
     if not args.keep_intermediates:
-        cleanup_region_intermediates(domain_name, year, month, scratch_dir, day=day,
-                                     suffix=suffix)
+        cleanup_region_intermediates(domain_name, tag, scratch_dir, suffix=suffix)
 
     finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode, "single_day": tag},
                    chunks=output_chunks)
@@ -608,8 +597,10 @@ def cmd_run(args):
         cfg.data["domains"][domain_key] = domain_cfg
     grid_mode = domain_cfg.get("grid", {}).get("mode", "footprint")
 
-    # Resolved up front so a bad output_chunks fails before any extraction runs.
+    # Resolved up front so a bad output_chunks/intermediate_period fails before
+    # any extraction runs.
     output_chunks = resolve_output_chunks(domain_cfg)
+    intermediate_period = resolve_intermediate_period(domain_cfg)
 
     zarr_format = args.zarr_format if args.zarr_format is not None else cfg.get("zarr_format", 2)
 
@@ -625,7 +616,7 @@ def cmd_run(args):
     suffix_note = f"  |  suffix: {suffix}" if suffix else ""
     print(f"Domain: {domain_name} ({domain_key})  |  data type: {source.name}  |  "
           f"grid mode: {grid_mode}  |  zarr v{zarr_format}{suffix_note}")
-    print(f"Output chunks: {output_chunks}")
+    print(f"Output chunks: {output_chunks}  |  intermediate period: {intermediate_period}")
 
     # Non-tiled sources (e.g. NZCSM): single file per timestep, no join; extract
     # and append a day at a time.
@@ -677,60 +668,70 @@ def cmd_run(args):
             print(f"    --overwrite: removing existing store")
             shutil.rmtree(store_path)
 
+        # One (month, days) chunk per extract → join → append pass. With the
+        # default month period this is one chunk per month, as it always was.
+        chunks = [
+            (month, days)
+            for month in months
+            for days in period_chunks(year, month, intermediate_period)
+        ]
+
+        present = set()
         if store_exists and not args.overwrite:
-            present = _read_present_months(store_path, year)
-            if present:
-                last_present = max(present)
-                to_do = [m for m in months if f"{m:02d}" not in present and f"{m:02d}" > last_present]
-                skipped = [f"{m:02d}" for m in months if f"{m:02d}" in present]
-                blocked = [f"{m:02d}" for m in months
-                           if f"{m:02d}" not in present and f"{m:02d}" < last_present]
-                if skipped:
-                    print(f"    already present, skipping: {skipped}")
-                if blocked:
-                    print(f"    WARNING: cannot backfill earlier missing month(s) {blocked} "
-                          f"via append; use --overwrite to rebuild the year.")
-            else:
-                to_do = months
+            present = _read_present_days(store_path, year)
+
+        if present:
+            last_present = max(present)
+            to_do = [(m, d) for m, d in chunks
+                     if not set(d) & present and max(d) > last_present]
+            skipped = [period_tag(year, m, d) for m, d in chunks if set(d) & present]
+            blocked = [period_tag(year, m, d) for m, d in chunks
+                       if not set(d) & present and max(d) < last_present]
+            if skipped:
+                print(f"    already present, skipping: {skipped}")
+            if blocked:
+                print(f"    WARNING: cannot backfill earlier missing period(s) {blocked} "
+                      f"via append; use --overwrite to rebuild the year.")
         else:
-            to_do = months
+            to_do = chunks
 
         if not to_do:
-            print("    nothing to do (all requested months present).")
+            print("    nothing to do (all requested periods present).")
             if not args.dry_run:
                 finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode})
                 written_stores.append(store_path)
             continue
 
-        print(f"    months to process: {[f'{m:02d}' for m in to_do]}")
+        print(f"    periods to process: {[period_tag(year, m, d) for m, d in to_do]}")
 
         if args.dry_run:
-            print(f"    [DRY RUN] would write {len(to_do)} month(s) to {store_path}")
+            print(f"    [DRY RUN] would write {len(to_do)} period(s) to {store_path}")
             continue
 
         scratch_root = resolve_config_value(cfg.get("scratch_path", ""), cfg.data)
         scratch_dir = str(Path(scratch_root) / "files")
 
-        for i, month in enumerate(to_do):
+        for i, (month, days) in enumerate(to_do):
+            tag = period_tag(year, month, days)
             month_mk = source.get_mk(year, month)
             use_interp = (grid_mode != "native") or (month_mk != canonical_mk)
 
             mk_label = f"Mk{month_mk}" if month_mk is not None else source.name
-            print(f"\n  --- {domain_name} {year}-{month:02d} ({mk_label}, "
+            print(f"\n  --- {domain_name} {tag} ({mk_label}, "
                   f"{'interp' if use_interp else 'native'}) ---")
-            month_ds = join_month(
+            period_ds = join_month(
                 domain_key, year, month, cfg,
                 target=target, use_interp=use_interp, scratch_dir=scratch_dir,
-                source=source, suffix=suffix,
+                days=days, source=source, suffix=suffix,
             )
 
             first = fresh and i == 0
-            append_month_to_year_store(month_ds, store_path, zarr_format=zarr_format,
+            append_month_to_year_store(period_ds, store_path, zarr_format=zarr_format,
                                        first=first, chunks=output_chunks)
-            print(f"  appended {year}-{month:02d} to store (first={first})")
+            print(f"  appended {tag} to store (first={first})")
 
             if not args.keep_intermediates:
-                cleanup_region_intermediates(domain_name, year, month, scratch_dir,
+                cleanup_region_intermediates(domain_name, tag, scratch_dir,
                                              suffix=suffix)
 
         finalize_attrs(
@@ -799,6 +800,7 @@ def cmd_extract(args):
     domain_key = cfg.resolve_domain_name(args.domain)
     domain_cfg = cfg.get_domain(domain_key)
     suffix = getattr(args, "suffix", None)
+    intermediate_period = resolve_intermediate_period(domain_cfg)
 
     date_str = str(args.date).strip()
     if not date_str.isdigit() or len(date_str) not in (6, 8):
@@ -829,19 +831,29 @@ def cmd_extract(args):
     target_lat, target_lon, use_interp = build_target_grid(domain_cfg, cfg, mk=mk)
     target = (target_lat, target_lon)
 
+    # An explicit --date YYYYMMDD asks for that one day; otherwise the month is
+    # split into the domain's intermediate periods, extracted one after another so
+    # only one period of one region is ever in memory.
+    if day is not None:
+        chunks = [[f"{year}{month:02d}{day:02d}"]]
+        scope = "single day"
+    else:
+        chunks = period_chunks(year, month, intermediate_period)
+        scope = f"whole month, {len(chunks)} x {intermediate_period}"
+
     day_str = f"-{day:02d}" if day is not None else ""
-    scope = "single day" if day is not None else "whole month"
     mk_label = f"Mk{mk}" if mk is not None else source.name
     print(f"Extracting {domain_cfg['domain_name']} {year}-{month:02d}{day_str} "
           f"({source.name}, {mk_label}, {scope}, regions {regions})")
 
-    for region_id in regions:
-        path = extract_region(
-            domain_key, year, month, region_id, cfg,
-            target=target, use_interp=use_interp, day=day, source=source,
-            suffix=suffix,
-        )
-        print(f"  region {region_id} → {path}")
+    for days in chunks:
+        for region_id in regions:
+            path = extract_region(
+                domain_key, year, month, region_id, cfg,
+                target=target, use_interp=use_interp, days=days, source=source,
+                suffix=suffix,
+            )
+            print(f"  {period_tag(year, month, days)} region {region_id} → {path}")
 
 
 def main(argv=None):

@@ -1,8 +1,8 @@
 """
-Joining per-region extractions into a monthly domain dataset.
+Joining per-region extractions into one period's domain dataset.
 
 Extracts each world region in a domain (writing per-region zarr intermediates),
-then stitches them into a single monthly dataset: regions in the same longitude
+then stitches them into a single dataset for the period: regions in the same longitude
 column are concatenated along latitude, then the columns are concatenated along
 longitude. Coordinates are normalised/deduplicated and 1-cell join seams filled.
 The result is renamed to the zarr-ready schema (lat/lon/levels) and returned.
@@ -21,6 +21,7 @@ import dask
 
 from .config import Config, resolve_config_value, store_stem
 from .metadata import apply_cf_metadata
+from .periods import month_days, period_tag
 from .sources import get_source
 from .regions import (
     build_domain_grid,
@@ -134,12 +135,12 @@ def join_month(
     scratch_dir=None,
     extract_missing=True,
     reuse_existing=True,
-    day=None,
+    days=None,
     source=None,
     suffix=None,
 ):
     """
-    Extract and join all regions for a domain/year/month (or single day).
+    Extract and join all regions for a domain/year/month (or a shorter period).
 
     Parameters
     ----------
@@ -161,9 +162,11 @@ def join_month(
         If True (default), run extraction for regions whose intermediate is absent.
     reuse_existing : bool, optional
         If True (default), skip extraction for regions whose intermediate exists.
-    day : int or str, optional
-        If given, join a single day instead of the whole month (pipeline smoke
-        test). Intermediates carry the full YYYYMMDD tag.
+    days : list of str, optional
+        The ``YYYYMMDD`` day keys to join, from
+        :func:`extract_um_met.periods.period_chunks`. Defaults to the whole month.
+        Intermediates carry the period's tag (see
+        :func:`extract_um_met.periods.period_tag`).
     suffix : str, optional
         Extra tag appended to the domain name in the per-region intermediate
         filenames, so a variant run reuses/cleans up only its own intermediates.
@@ -179,8 +182,9 @@ def join_month(
         cfg = Config(cfg)
 
     month_int = int(month)
-    month_str = f"{month_int:02d}"
-    date_tag = f"{year}{month_str}{int(day):02d}" if day is not None else f"{year}{month_str}"
+    if days is None:
+        days = month_days(year, month_int)
+    date_tag = period_tag(year, month_int, days)
     domain_cfg = cfg.get_domain(domain_key)
     domain_name = domain_cfg["domain_name"]
     stem = store_stem(domain_name, suffix)
@@ -229,7 +233,7 @@ def join_month(
             target=target,
             use_interp=use_interp,
             scratch_dir=scratch_dir,
-            day=day,
+            days=days,
             source=source,
             suffix=suffix,
         )
@@ -317,19 +321,16 @@ def join_month(
             source_name=source.name,
         )
 
-        log(f"Monthly dataset ready: {dict(met.sizes)} "
+        log(f"{date_tag} dataset ready: {dict(met.sizes)} "
             f"(delta_lat={met.attrs.get('delta_lat', 'n/a')}, "
             f"delta_lon={met.attrs.get('delta_lon', 'n/a')})")
 
     return met
 
 
-def cleanup_region_intermediates(domain_name, year, month, scratch_dir, day=None,
-                                 suffix=None):
-    """Delete per-region zarr intermediates for a domain/year/month (or day)."""
+def cleanup_region_intermediates(domain_name, date_tag, scratch_dir, suffix=None):
+    """Delete the per-region zarr intermediates for one period's ``date_tag``."""
     stem = store_stem(domain_name, suffix)
-    month_str = f"{int(month):02d}"
-    date_tag = f"{year}{month_str}{int(day):02d}" if day is not None else f"{year}{month_str}"
     pattern = os.path.join(scratch_dir, f"{stem}_Met_{date_tag}_*.zarr")
     removed = 0
     for f in glob.glob(pattern):

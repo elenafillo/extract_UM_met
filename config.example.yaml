@@ -54,9 +54,7 @@ metadata:
 # Model levels: by default `level_stride` keeps level 1 plus every Nth level.
 # Give an explicit `model_levels` list (1-based, ≤ the source's n_levels) to load
 # exactly those levels instead — it overrides level_stride. `model_levels: "all"`
-# loads every level the source has (59 for UM_Global, 70 for NZCSM); note that
-# with the default stride of 3 this is ~3x the levels, so expect a store roughly
-# 3x the size and correspondingly slower to write.
+# loads every level the source has (59 for UM_Global, 70 for NZCSM)
 data_types:
   UM_Global:
     # Global UM archive (Mk6–12).
@@ -90,14 +88,22 @@ default_edge_size: [100, 100]
 # yearly zarr store, keyed by time/levels/lat/lon (-1 = one chunk over the whole
 # dim). Only the dims you name change; the rest keep the default
 # {time: 1, levels: 3, lat: -1, lon: -1}, which suits scattered single-timestep
-# reads. Raise `time` if you mostly read long time series at a few points. It
-# only applies when a store is first created — an existing store keeps the layout
-# it was built with, so rerun with --overwrite to change it.
+# reads. Raise `time` if you mostly read long time series at a few points.
+#
+# `intermediate_period` sets how much time one scratch intermediate covers:
+# month (the default), week (7-day blocks within the month: 1-7, 8-14, 15-21,
+# 22-28, 29-end), or day. Extraction holds one period of one region in memory at
+# once, so this is the knob to turn when a large domain runs out of memory —
+# weekly needs roughly a quarter of monthly, daily a thirtieth. The cost is more
+# (smaller) scratch stores and more appends to the yearly store; the output is
+# identical either way. Big domains, many model levels, and fine target grids all
+# push in the same direction.
 domains:
   SA:
     domain_name: "SOUTHAMERICA"
     footprint: "GOSAT-BRAZIL-column_SOUTHAMERICA_201801.nc"
     world_regions_codes: [6, 9, 10, 13]
+    # intermediate_period: week    # month (default) | week | day
     # output_chunks:
     #   time: 24                   # only the dims you name are changed
     # Grid specification (optional; if absent, falls back to footprint mode with default edge sizes)

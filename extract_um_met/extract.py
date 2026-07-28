@@ -13,6 +13,7 @@ Ported from ``satellite_met_1b1_fixed_v3.py`` (per-region body).
 import datetime
 import os
 import warnings
+from fnmatch import fnmatch
 
 import iris
 import numpy as np
@@ -22,6 +23,7 @@ import dask
 from .config import Config, resolve_config_value, store_stem
 from .iris_io import load_files, delete_iris
 from .grid import build_target_grid
+from .periods import month_days, period_tag
 from .sources import get_source
 from .metadata import to_zarr_schema, add_delta_attrs, apply_cf_metadata
 from .rotated import (
@@ -208,16 +210,16 @@ def extract_region(
     scratch_dir=None,
     save=True,
     cleanup_pp=True,
-    day=None,
+    days=None,
     source=None,
     suffix=None,
 ):
     """
-    Extract a single world region for a domain/year/month (or single day).
+    Extract a single world region for a domain/year/month (or a shorter period).
 
-    Loads the region's monthly UM data, aligns winds onto the mass grid, applies
-    the target grid, slices to the region's bounds (handling dateline crossings),
-    and writes a per-region zarr intermediate to scratch.
+    Loads the region's UM data for the period, aligns winds onto the mass grid,
+    applies the target grid, slices to the region's bounds (handling dateline
+    crossings), and writes a per-region zarr intermediate to scratch.
 
     Parameters
     ----------
@@ -246,10 +248,12 @@ def extract_region(
     cleanup_pp : bool, optional
         If True (default), delete the region's unzipped .pp scratch files after
         a successful load to conserve scratch space.
-    day : int or str, optional
-        If given, restrict the load to a single day (that day's ~8 3-hourly
-        files) instead of the whole month — a cheap pipeline smoke test. The
-        intermediate filename then carries the full YYYYMMDD tag.
+    days : list of str, optional
+        The ``YYYYMMDD`` day keys to load, from
+        :func:`extract_um_met.periods.period_chunks`. Defaults to the whole month.
+        A shorter period holds less in memory at once, which is what keeps large
+        domains inside their memory limit; the intermediate filename then carries
+        the period's tag (see :func:`extract_um_met.periods.period_tag`).
     suffix : str, optional
         Extra tag appended to the domain name in the intermediate filename
         (``{domain_name}_{suffix}_Met_...``), so variant extractions don't share
@@ -263,14 +267,13 @@ def extract_region(
     if isinstance(cfg, dict):
         cfg = Config(cfg)
 
-    # Normalise month to a "01".."12" string; build the glob key (and file tag).
-    # date drives both the archive glob (MO{date}*) and the intermediate name.
+    # The period's day keys select which archive files to load; its tag names the
+    # intermediate (YYYYMM for a whole month, else the period's first day).
     month_int = int(month)
-    month_str = f"{month_int:02d}"
-    if day is not None:
-        date = f"{year}{month_str}{int(day):02d}"
-    else:
-        date = f"{year}{month_str}"
+    month_key = f"{year}{month_int:02d}"
+    if days is None:
+        days = month_days(year, month_int)
+    tag = period_tag(year, month_int, days)
 
     domain_cfg = cfg.get_domain(domain_key)
     domain_name = domain_cfg["domain_name"]
@@ -314,12 +317,19 @@ def extract_region(
 
     mk_label = f"Mk{mk}" if mk is not None else source.name
     region_start = datetime.datetime.now()
-    log(f"************ Region {region_id} ({domain_name} {date}, {mk_label}) ************")
+    log(f"************ Region {region_id} ({domain_name} {tag}, {mk_label}) ************")
 
     with dask.config.set(**{"array.slicing.split_large_chunks": True}), \
             xr.set_options(keep_attrs=True):
         t0 = datetime.datetime.now()
-        files = source.list_files(date, region=region_id, mk=mk)
+        # One glob for the whole month, then keep the days this period wants: the
+        # Mk10+ archive folders hold ~400k files in one directory, so globbing per
+        # day would repeat that listing once per day of the period.
+        wanted = [source.glob_pattern(d, region=region_id, mk=mk) for d in days]
+        files = [
+            f for f in source.list_files(month_key, region=region_id, mk=mk)
+            if any(fnmatch(f, pattern) for pattern in wanted)
+        ]
         cube = load_files(files, source.load_vars(), scratch_root + os.sep)
         log(f"region {region_id} loaded in {(datetime.datetime.now() - t0).total_seconds():.1f}s")
 
@@ -373,7 +383,8 @@ def extract_region(
             # Safe to delete the unzipped .pp files now the data is in memory.
             # (iris.load is lazy, so this must come after .load(), not before.)
             try:
-                delete_iris(scratch_root + os.sep, date, region_id)
+                for day_key in days:
+                    delete_iris(scratch_root + os.sep, day_key, region_id)
             except Exception as exc:  # non-fatal; just leaves scratch files behind
                 log(f"could not clean up .pp scratch for region {region_id}: {exc}")
 
@@ -382,14 +393,14 @@ def extract_region(
         # provenance; each averaged field builds its own time axis (its forecast
         # dims may differ) and drops that bookkeeping before merging on valid time.
         inst = _build_time_axis(inst, keep_provenance=True)
-        _check_unique_time(inst, region_id, date)
+        _check_unique_time(inst, region_id, tag)
         log("time dimension constructed; forecast_period + forecast_reference_time retained")
 
         if avg_arrays:
             avg_das = []
             for da in avg_arrays:
                 da = _build_time_axis(da, keep_provenance=False)
-                _check_unique_time(da, region_id, date)
+                _check_unique_time(da, region_id, tag)
                 da.attrs["averaging"] = _AVERAGED_NOTE
                 avg_das.append(da)
             all_variables = xr.merge([inst, *avg_das], join="inner", compat="override")
@@ -439,7 +450,7 @@ def extract_region(
             {"model_level_number": -1, "time": 24, "latitude": -1, "longitude": -1}
         )
 
-        store = os.path.join(scratch_dir, f"{stem}_Met_{date}_{region_id}.zarr")
+        store = os.path.join(scratch_dir, f"{stem}_Met_{tag}_{region_id}.zarr")
         t0 = datetime.datetime.now()
         # Same zarr format as the yearly store, so scratch and final output stay on
         # one format instead of the intermediates taking the library default (v3).
