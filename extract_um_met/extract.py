@@ -486,9 +486,9 @@ def extract_single(
         Precomputed ``(target_lat, target_lon)`` regular grid. If None, built from
         the domain's grid spec.
     scratch_dir : str, optional
-        Directory for the intermediate NetCDF (only used when ``save``).
+        Directory for the intermediate zarr store (only used when ``save``).
     save : bool, optional
-        If True, write an intermediate NetCDF and return its path; otherwise
+        If True, write an intermediate zarr store and return its path; otherwise
         return the in-memory dataset (the default for the batched run loop).
     source : extract_um_met.sources.MetSource, optional
         Resolved source; if None, resolved from the domain's ``data_type``.
@@ -632,9 +632,12 @@ def extract_single(
         result = result.chunk(
             {"levels": -1, "time": 24, "lat": 200, "lon": 200}
         )
-        filename = os.path.join(scratch_dir, f"{stem}_Met_{date}.nc")
-        result.to_netcdf(filename)
-        log(f"---- {domain_name} {date} saved to {filename} in "
+        store = os.path.join(scratch_dir, f"{stem}_Met_{date}.zarr")
+        # Same zarr format as the yearly store, so scratch and final output stay on
+        # one format instead of the intermediates taking the library default (v3).
+        result.to_zarr(store, mode="w", zarr_format=cfg.get("zarr_format", 2))
+        log(f"---- {domain_name} {date} saved to {store} "
+            f"({_dir_size_mb(store):.1f} MB) in "
             f"{(datetime.datetime.now() - start).total_seconds():.1f}s ----")
 
-    return filename
+    return store

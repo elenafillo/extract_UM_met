@@ -1,5 +1,5 @@
 #!/bin/bash
-# One array task = one (month, region) pair → one scratch .nc intermediate.
+# One array task = one (month, region) pair → one scratch .zarr intermediate.
 # Submitted by scripts/launch_met_array.sh, which sets DOMAIN / YEAR /
 # START_MONTH / REGIONS / SUFFIX and the array range. Do not sbatch directly.
 #
