@@ -1,9 +1,8 @@
 # extract_um_met
 
-Extract meteorology from the Met Office **Unified Model (UM)** — iris `.pp` files
-archived on JASMIN — into analysis-ready yearly [Zarr](https://zarr.dev/) stores.
+Extract Numerical Weather Prediction (NWP) meteorology from the Met Office **Unified Model (UM)** — `.pp` files archived on [JASMIN](https://www.jasmin.ac.uk/) and [CEDA](https://archive.ceda.ac.uk/) — into analysis-ready yearly [Zarr](https://zarr.dev/) stores.
 
-The UM archive is not laid out for analysis: it is thousands of gzipped `.pp`
+This large dataset is not laid out for analysis: it is thousands of gzipped `.pp`
 files, split across time blocks and geographic tiles, on a grid whose resolution
 changes partway through the record. `extract_um_met` is one command that pulls
 the tiles your region needs, joins them, regrids them onto a target you define,
@@ -13,6 +12,9 @@ and appends the result to a single Zarr store per year.
 python -m extract_um_met run --domain SA --date 2016
 # → {zarr_save_directory}/SOUTHAMERICA/SOUTHAMERICA_Met_2016.zarr
 ```
+
+## Accessing the data
+The data is accessible via JASMIN ([you will need to link your CEDA and JASMIN accounts](https://help.ceda.ac.uk/article/5105-linking-your-jasmin-account)) or avaiable to [download directly from CEDA](https://data.ceda.ac.uk/badc/name_nwp/data/global) (available only from 2015-2024).
 
 ## How the UM archive is organised
 
@@ -31,12 +33,14 @@ which is why regridding onto a stable target grid is part of the job:
 | Mk7 | Apr 2013 – Jun 2014 | 0.234° × 0.352° | extractable |
 | Mk8 | Jul 2014 – Jul 2015 | 0.156° × 0.234° | extractable |
 | Mk9 | Aug 2015 – Jun 2017 | 0.156° × 0.234° | extractable |
-| Mk10 | Jul 2017 – May 2022 | — | symlinked to `/badc/`, **not accessible** |
-| Mk11 | Jun 2022 – | — | symlinked to `/badc/`, **not accessible** |
+| Mk10 | Jul 2017 – May 2022 | 0.094° × 0.141° | extractable |
+| Mk11 | Jun 2022 – Jan 2026 | 0.094° × 0.141° | extractable |
+| Mk12 | Feb 2026 – | 0.094° × 0.141° | extractable |
 
 You never set the Mk yourself — give a `--date` and the block is resolved in
-code. In practice this means **2011-01 … 2017-06 is what you can extract today**;
-any later date reports missing files.
+code. Mk6–Mk12 are all extractable, so **2011-01 onward is available**. Note the
+resolution doubles at Mk10 (N768 → N1280) and stays there, which makes anything
+from 2017-07 substantially heavier to extract and store.
 
 ### World regions — the space axis
 
@@ -55,7 +59,7 @@ supported by the same machinery, at earlier stages of readiness:
 
 | Data type | What it is | Status |
 | --------- | ---------- | ------ |
-| **`UM_Global`** | Global UM, 14 tiles, L59, 3-hourly | **working** (Mk6–9) — the main path |
+| **`UM_Global`** | Global UM, 14 tiles, L59, 3-hourly | **working** (Mk6–12) — the main path |
 | `UM1p5km` | 1.5 km UK limited-area (UKV), rotated pole, 16 UK tiles, L57, hourly | region bounds not generated yet |
 | `NZCSM` | New Zealand convective-scale, rotated pole, one file per timestep, L70, hourly | partial — 12 variables ship, stresses deferred |
 

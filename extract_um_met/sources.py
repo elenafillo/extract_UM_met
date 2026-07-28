@@ -263,6 +263,26 @@ class MetSource:
         )
         return os.path.join(self.archive_directory, rel)
 
+    def filepath(self, date, region=None, mk=None):
+        """
+        Build the exact path for one fully-specified timestep.
+
+        `date` must be a complete 'YYYYMMDDHHMM' key, so the template's date
+        wildcard matches nothing and can be dropped. Unlike :meth:`list_files`
+        this touches no directory listing, which matters on the Mk10+ folders
+        (~400k files in one directory).
+
+        Parameters
+        ----------
+        date : str
+            Full timestep key, 'YYYYMMDDHHMM'.
+        region : int, optional
+            Region ID (required for tiled sources; ignored otherwise).
+        mk : int, optional
+            Mk version (required where the path/filename includes `{mk}`).
+        """
+        return self.glob_pattern(date, region=region, mk=mk).replace("*", "")
+
     def list_files(self, date, region=None, mk=None):
         """
         Return the sorted list of archive files matching a (date, region).

@@ -69,6 +69,8 @@ mkdir -p "$TMPDIR"
   per-region intermediates — see `scratch_path` in the config below.
 - Scratch is not backed up and is auto-cleaned; it is the right place for
   transient temp/decompression files, not for outputs.
+- `make-native-grid` does not depend on this — it decompresses into
+  `scratch_path` directly — but iris's own temp files still follow `TMPDIR`.
 
 ---
 
@@ -144,12 +146,18 @@ Native UM grids are regenerable and **not committed** (`data/` is git-ignored).
 Before your first `native`-mode run — and safe to run any time — build them:
 
 ```bash
-python -m extract_um_met make-native-grid --sample-date 201601
+python -m extract_um_met make-native-grid
 ```
 
-This writes `data/native_grid_Mk{6..9}_*.nc` plus `_info.yaml` metadata. Only
-Mk6–Mk9 are currently accessible; Mk10/11 are symlinked to `/badc/` and will be
-reported as missing. See [how_to_datatypes.md](how_to_datatypes.md#5-native-grids-data).
+This writes `data/native_grid_Mk{6..12}_*.nc` plus `_info.yaml` metadata. Each Mk
+is read from one known sample timestep (`cli.MK_SAMPLE_TIMESTEPS`) — the grid is
+fixed within an Mk block, so the choice does not matter, and naming it avoids
+listing the Mk10–12 folders, which hold hundreds of thousands of files. Override
+it for a single block with `--mk 12 --sample-date YYYYMMDDHHMM`. See
+[how_to_datatypes.md](how_to_datatypes.md#5-native-grids-data).
+
+Gzipped Mk6–9 files are decompressed into `scratch_path` from `config.yaml`, not
+`/tmp` — JASMIN's `/tmp` is a 2 GB tmpfs and is routinely full.
 
 ---
 

@@ -34,6 +34,20 @@ from .sources import get_source
 from .zarr_io import append_month_to_year_store, finalize_attrs
 
 
+# One sample timestep per Mk, for make-native-grid. The native grid is fixed
+# within an Mk block, so any timestep in range gives the same answer — naming
+# one lets us build the exact path instead of listing the Mk folder.
+MK_SAMPLE_TIMESTEPS = {
+    6: "201201010000",
+    7: "201401010000",
+    8: "201501010000",
+    9: "201601010000",
+    10: "201801010000",
+    11: "202301010000",
+    12: "202603010000",
+}
+
+
 def _make_native_grid_parser(subparsers):
     """Create the 'make-native-grid' subcommand parser."""
     parser = subparsers.add_parser(
@@ -45,14 +59,16 @@ def _make_native_grid_parser(subparsers):
         '--mk',
         type=int,
         default=None,
-        help='Mk version to extract (6, 7, 8, 9, 10, 11). If None, extracts all available.'
+        help='Mk version to extract (6, 7, 8, 9, 10, 11, 12). If None, extracts all available.'
     )
 
     parser.add_argument(
         '--sample-date',
         type=str,
-        default='201601',
-        help='Sample date (YYYYMM) to load data from (default: 201601)'
+        default=None,
+        help='Timestep (YYYYMMDDHHMM) to read the grid from, overriding the '
+             'per-Mk default in MK_SAMPLE_TIMESTEPS. Only valid with --mk, '
+             'since one timestep cannot belong to several Mk blocks.'
     )
 
     parser.add_argument(
@@ -83,27 +99,40 @@ def cmd_make_native_grid(args):
       - Metadata with resolutions (native_grid_Mk{mk}_info.yaml)
     """
     import os
-    import glob
     import numpy as np
     import xarray as xr
     import yaml
 
     cfg = Config()
     output_dir = args.output_dir or cfg.get('native_grid_directory', 'data/')
-    os.makedirs(output_dir, exist_ok=True)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except FileExistsError:
+        pass
 
     # Determine which Mk(s) to extract
     if args.mk is not None:
         mks = [args.mk]
     else:
-        mks = list(range(6, 12))
+        mks = sorted(MK_SAMPLE_TIMESTEPS)
+
+    if args.sample_date is not None and args.mk is None:
+        print("ERROR: --sample-date applies to one Mk block; pass --mk too")
+        sys.exit(1)
 
     # Native grids are a Global-UM concept; take the archive path from that source.
-    met_archive_dir = get_source("UM_Global", cfg).archive_directory
+    source = get_source("UM_Global", cfg)
+    met_archive_dir = source.archive_directory
     if not met_archive_dir:
         print("ERROR: UM_Global archive not configured "
               "(set data_types.UM_Global.archive_directory)")
         sys.exit(1)
+
+    # Mk6-9 files are gzipped and must be decompressed before iris reads them.
+    # Use the configured scratch path like the rest of the pipeline — the default
+    # tempfile location is /tmp, a 2 GB tmpfs on JASMIN nodes.
+    scratch_dir = resolve_config_value(cfg.get('scratch_path', ''), cfg.data)
+    os.makedirs(scratch_dir, exist_ok=True)
 
     # All 14 world regions
     all_regions = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
@@ -121,12 +150,8 @@ def cmd_make_native_grid(args):
                 print(f"  Skipping Mk {mk}")
                 continue
 
-            # Find all available files to identify regions with data
-            all_files = sorted(glob.glob(os.path.join(mk_folder, "MO*.pp*")))
-            if not all_files:
-                print(f"  WARNING: No data files found in {mk_folder}")
-                print(f"  Skipping Mk {mk}")
-                continue
+            sample_date = args.sample_date or MK_SAMPLE_TIMESTEPS[mk]
+            print(f"Sample timestep: {sample_date}")
 
             # Extract grids for each region
             region_grids = {}  # region_id -> (lat, lon)
@@ -134,30 +159,24 @@ def cmd_make_native_grid(args):
 
             for region_id in all_regions:
                 try:
-                    # Find a file for this region with the correct Mk version in filename
-                    # Files must match: UMG_Mk{mk}_* and _L59PT{region_id}
-                    region_files = [
-                        f for f in all_files
-                        if f"UMG_Mk{mk}_" in f and f"_L59PT{region_id}.pp" in f
-                    ]
+                    sample_file = source.filepath(sample_date, region=region_id, mk=mk)
 
-                    if not region_files:
-                        print(f"  Region {region_id:2d}: No files found")
+                    if not os.path.exists(sample_file):
+                        print(f"  Region {region_id:2d}: No file at {os.path.basename(sample_file)}")
                         continue
 
-                    sample_file = region_files[0]
                     print(f"  Region {region_id:2d}: Loading {os.path.basename(sample_file)}")
 
                     try:
                         # Handle .pp.gz files by decompressing first
                         if sample_file.endswith('.gz'):
                             import gzip
-                            import tempfile
                             import shutil
-                            with tempfile.NamedTemporaryFile(suffix='.pp', delete=False) as tmp:
-                                with gzip.open(sample_file, 'rb') as f_in:
-                                    shutil.copyfileobj(f_in, tmp)
-                                tmp_path = tmp.name
+                            tmp_path = os.path.join(
+                                scratch_dir, os.path.basename(sample_file)[:-len('.gz')]
+                            )
+                            with gzip.open(sample_file, 'rb') as f_in, open(tmp_path, 'wb') as f_out:
+                                shutil.copyfileobj(f_in, f_out)
                             try:
                                 cubes = iris.load(tmp_path, callback=remove_coord_callback)
                             finally:

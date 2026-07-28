@@ -269,7 +269,8 @@ notebooks under `notebooks/` for validation.
 | Symptom | Likely cause / fix |
 | ------- | ------------------ |
 | `config.yaml did not parse` / domain not found | not in the repo root, or no `config.yaml` — `cp config.example.yaml config.yaml` |
-| "missing files" for dates ≥ 2017-07 | Mk10/11 symlinked to `/badc/`, not extractable (see [datatypes](how_to_datatypes.md#2-the-global-um-archive-um_global)) |
+| "missing files" past the newest Mk block | the archive has moved to a new Mk — extend `iris_io.get_Mk` and `cli.MK_SAMPLE_TIMESTEPS` (see [datatypes](how_to_datatypes.md#2-the-global-um-archive-um_global)) |
+| dates ≥ 2017-07 much slower / larger than expected | Mk10 onward is N1280, ~2.8× the points of Mk8/9 — not a fault |
 | Node `/tmp` fills / decompression fails | `TMPDIR` not set to scratch — see [setup §3](how_to_setup.md#3-set-tmpdir-to-scratch) |
 | "cannot backfill earlier missing month" | append needs time order — rerun the year with `--overwrite` |
 | `Native grid not found for Mk N` | run `make-native-grid --mk N` first |

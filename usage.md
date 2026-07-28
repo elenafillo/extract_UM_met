@@ -15,8 +15,9 @@ tool, and for the codebase map, see [`How_Tos/`](https://github.com/elenafillo/e
 
 **Working end to end (Global UM):** config → per-region extraction → join →
 yearly Zarr append, with resume, three grid modes, single-day smoke test,
-`make-native-grid`, and CF/provenance metadata. Global Mk6–Mk9 (2011-01 …
-2017-06) are extractable; Mk10/11 are symlinked to `/badc/` and inaccessible.
+`make-native-grid`, and CF/provenance metadata. Global Mk6–Mk12 (2011-01 onward)
+are extractable. Mk10 onward is N1280 (0.09375° × 0.140625°), roughly 2.8× the
+points of Mk8/9, so post-2017-07 runs are correspondingly heavier.
 
 **Data-type abstraction landed:** the pipeline dispatches on a `MetSource`
 descriptor (`extract_um_met/sources.py`) instead of hardcoding the global UM.

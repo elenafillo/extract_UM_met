@@ -20,7 +20,7 @@ one product.
 
 | Data type | Archive | Grid | Regions | Tiled? | Levels | Cadence | Mk calendar | Status |
 | --------- | ------- | ---- | ------- | ------ | ------ | ------- | ----------- | ------ |
-| **`UM_Global`** | `…/met_archive/Global/` | regular lat/lon | `world14` (14 tiles) | yes → join | L59 | 3-hourly | Mk6–11 | **working** (Mk6–9) |
+| **`UM_Global`** | `…/met_archive/Global/` | regular lat/lon | `world14` (14 tiles) | yes → join | L59 | 3-hourly | Mk6–12 | **working** (Mk6–12) |
 | **`UM1p5km`** | `…/met_archive/LimitedArea/` | rotated pole | `uk16` (16 UK tiles) | yes → join | L57 | 1-hourly | Mk2–4 (Mk4 confirmed) | region bounds **not generated yet** |
 | **`NZCSM`** | TBD (config) | rotated pole | none (one file) | no join | L70 | 1-hourly | none | **partial** (12 vars ship; stresses deferred) |
 
@@ -46,17 +46,26 @@ period at a given native resolution:
 | --- | ----- | -------------------- | --------------------- |
 | Mk6 | Jan 2011 – Mar 2013 | 0.234375° × 0.351562° | 769 × 1024 |
 | Mk7 | Apr 2013 – Jun 2014 | 0.234375° × 0.351562° | 769 × 1024 |
-| Mk8 | Jul 2014 – Jul 2015 | 0.15625° × 0.234375° | 1152 × 1729 |
+| Mk8 | Jul 2014 – Jul 2015 | 0.15625° × 0.234375° | 1152 × 1536 |
 | Mk9 | Aug 2015 – Jun 2017 | 0.15625° × 0.234375° | 1152 × 1536 |
-| Mk10 | Jul 2017 – May 2022 | — (symlinked to `/badc/`) | not extractable |
-| Mk11 | Jun 2022 – | — (symlinked to `/badc/`) | not extractable |
+| Mk10 | Jul 2017 – May 2022 | 0.09375° × 0.140625° | 1920 × 2560 |
+| Mk11 | Jun 2022 – Jan 2026 | 0.09375° × 0.140625° | 1920 × 2560 |
+| Mk12 | Feb 2026 – | 0.09375° × 0.140625° | 1920 × 2560 |
 
-**Availability:** Mk6–Mk9 (2011-01 … 2017-06) are extractable today. Mk10/11 are
-symlinked to `/badc/` and inaccessible, so any date ≥ 2017-07 reports missing
-files. The Mk10/11 code paths are kept intact for when access is restored.
+**Availability:** Mk6–Mk12 (2011-01 onward) are all extractable. Every grid size
+above is what `make-native-grid` actually stitches from the 14 region files, not
+a nominal figure.
 
-The Mk boundary for a date is resolved in code (`iris_io.get_Mk`); you never set
-it manually — just give a `--date`.
+Mk10 is a **resolution jump**: the global model moves from N768 (Mk8/9) to N1280,
+so Δlat/Δlon halve and the grid is ~2.8× more points per level. Mk11 and Mk12
+stay on N1280. Expect longer extractions, larger intermediates and bigger Zarr
+stores for any date from 2017-07 onward.
+
+Mk blocks overlap slightly in the archive (e.g. `UMG_Mk11PT/` starts at 2022-04 while
+Mk10 runs to 2022-05, and `UMG_Mk12PT/` starts at 2025-12 while Mk11 runs to
+2026-01). The boundaries in the table are the ones used in the code via `get_Mk`: the switch happens the month after the previous block's last full month.
+
+Note that the Mk boundary for a date is resolved in code (`iris_io.get_Mk`); you never set it manually — just give a `--date`.
 
 ### Filename pattern
 
@@ -69,8 +78,8 @@ MO{YYYYMMDD}{HHMM}.UMG_Mk{N}_{set}_L59PT{region}.pp[.gz]
 - `{set}` — variable set token `I` or `M` (see below). *(Mk6 files omit the
   `_I_` token — handled automatically.)*
 - `{region}` — world region `1`–`14` (see §4).
-- Mk6–Mk9 files are **gzipped** (`.pp.gz`) and are decompressed to `TMPDIR`
-  before reading; Mk10+ are plain `.pp`.
+- Mk6–Mk9 files are **gzipped** (`.pp.gz`) and are decompressed under
+  `scratch_path` before reading; Mk10–Mk12 are plain `.pp`.
 
 ---
 
@@ -85,7 +94,7 @@ Every domain is extracted onto a **target grid** chosen by its `grid.mode`
 | **`regular`** | `np.arange` mesh from bounds + step | yes | `lat_bounds`, `lon_bounds`, `dlat`, `dlon` |
 | **`native`** | the saved native UM grid (subset to bounds) | **no** (passthrough on matching Mk) | pre-built native grids in `data/` |
 
-If a domain has no `grid:` block it defaults to **footprint** with the domain's
+If a domain has no `grid:` block, it defaults to **footprint** with the domain's
 `footprint` key and `default_edge_size`.
 
 **Footprint mode** loads the reference footprint, crops it to where measurements
@@ -192,14 +201,21 @@ store — see the `--suffix` section of [how_to_extract.md](how_to_extract.md).
 ## 5. Native grids (`data/`)
 
 Native grids are the true UM lat/lon per Mk, saved for reference and for
-`native`-mode extraction. They are **regenerable** and git-ignored — build them
-with `make-native-grid` (see [how_to_setup.md](how_to_setup.md#5-generate-native-grids-one-off)):
+`native`-mode extraction. `data/` is **empty on a fresh clone** — the grids are
+regenerable and git-ignored, so build them with `make-native-grid` before your
+first `native`-mode run (see [how_to_setup.md](how_to_setup.md#5-generate-native-grids-one-off)):
 
 ```bash
-python -m extract_um_met make-native-grid --sample-date 201601   # all Mks
-python -m extract_um_met make-native-grid --mk 9                  # one Mk
-python -m extract_um_met make-native-grid --dry-run              # inspect, no write
+python -m extract_um_met make-native-grid              # all Mks (6–12)
+python -m extract_um_met make-native-grid --mk 9       # one Mk
+python -m extract_um_met make-native-grid --dry-run    # inspect, no write
 ```
+
+Each Mk is read from one known sample timestep (`cli.MK_SAMPLE_TIMESTEPS`); the
+grid is fixed within an Mk block, so which timestep does not matter. Naming it
+also keeps the command off a directory listing — the Mk10–12 folders hold
+hundreds of thousands of files. Override it for a single block with
+`--mk 12 --sample-date YYYYMMDDHHMM`.
 
 Per Mk this writes into `data/`:
 
@@ -209,9 +225,10 @@ Per Mk this writes into `data/`:
   1152 × 1536 at 0.15625° × 0.234375°)
 
 **Why it matters:** resolution changes at Mk boundaries (Mk6/7 coarse → Mk8/9
-fine). Footprint and regular modes always interpolate onto a fixed target, so
-they are immune. Native mode snaps to one canonical Mk grid and only interpolates
-off-resolution months.
+fine → Mk10–12 finer still). Footprint and regular modes always interpolate onto
+a fixed target, so they are immune. Native mode snaps to one canonical Mk grid
+and only interpolates off-resolution months — which now costs more, since a year
+spanning the 2017-07 boundary mixes N768 and N1280 months.
 
 ---
 
