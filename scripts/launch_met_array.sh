@@ -59,7 +59,7 @@ fi
 # different grids and the join would silently produce a mixed-grid store.
 if [ "$GRID_MODE" = "native" ]; then
     echo "ERROR: $DOMAIN uses grid mode 'native', which is not safe to extract" >&2
-    echo "       per-region in parallel (see how_to_datatypes.md). Use" >&2
+    echo "       per-region in parallel (see How_Tos/concepts.md). Use" >&2
     echo "       scripts/launch_met.sh instead." >&2
     exit 1
 fi
