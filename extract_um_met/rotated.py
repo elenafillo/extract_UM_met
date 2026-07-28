@@ -60,17 +60,24 @@ def latlon_target_cube(lat, lon, earth_radius=UM_EARTH_RADIUS):
     )
 
 
-def regrid_to_latlon(cube, target_cube, scheme=None):
+def latlon_regridder(src_cube, target_cube, scheme=None):
     """
-    Regrid a cube (rotated-pole or otherwise) onto a regular lat/lon target.
+    Build a reusable regridder from ``src_cube``'s grid onto a regular lat/lon target.
 
-    iris projects between the source and target coordinate systems, so this works
+    ``cube.regrid(target, scheme)`` recomputes the source→target mapping on every
+    call. One extract regrids ~10 fields that all sit on the same (rotated) mass
+    grid, so the mapping is built once here and applied per cube instead. iris
+    projects between the source and target coordinate systems, so this works
     directly for a rotated-pole source and a regular lat/lon target.
+
+    The regridder is valid for any cube on ``src_cube``'s horizontal grid — leading
+    level/time dims may differ — and iris raises if a cube's grid does not match,
+    so a field on an unexpected grid fails loudly rather than being mis-mapped.
 
     Parameters
     ----------
-    cube : iris.cube.Cube
-        Source cube (2D or with leading level/time dims).
+    src_cube : iris.cube.Cube
+        A cube on the source horizontal grid (e.g. a mass-grid field).
     target_cube : iris.cube.Cube
         Target grid from :func:`latlon_target_cube`.
     scheme : iris regridding scheme, optional
@@ -79,10 +86,10 @@ def regrid_to_latlon(cube, target_cube, scheme=None):
 
     Returns
     -------
-    iris.cube.Cube
-        Regridded cube on the target lat/lon grid.
+    callable
+        ``regridder(cube)`` → cube on the target lat/lon grid.
     """
-    return cube.regrid(target_cube, scheme or Linear(extrapolation_mode="mask"))
+    return (scheme or Linear(extrapolation_mode="mask")).regridder(src_cube, target_cube)
 
 
 def rotate_winds_true_north(u_cube, v_cube, mass_cube, earth_radius=UM_EARTH_RADIUS):
@@ -94,7 +101,7 @@ def rotate_winds_true_north(u_cube, v_cube, mass_cube, earth_radius=UM_EARTH_RAD
     ``rotate_winds`` turns the grid-relative components into true
     eastward/northward. The result stays on the rotated grid (keeps
     ``grid_latitude``/``grid_longitude``), ready to be regridded to lat/lon with
-    :func:`regrid_to_latlon`.
+    :func:`latlon_regridder`.
 
     Parameters
     ----------
