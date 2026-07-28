@@ -166,7 +166,7 @@ class MetSource:
     model_levels : tuple of int, optional
         Explicit model levels to load (1-based, ≤ `n_levels`). When set, these
         exact levels are used and `level_stride` is ignored. None (default) →
-        stride-based subsampling.
+        stride-based subsampling. Config may give ``"all"`` for every level.
     """
 
     name: str
@@ -407,14 +407,24 @@ def _coerce_levels(value, n_levels, key="model_levels"):
     Coerce a config list of model levels into a sorted, de-duplicated tuple of
     ints, validated against ``1..n_levels``.
 
+    The string ``"all"`` is accepted as shorthand for every level the source has,
+    ``1..n_levels``.
+
     Unlike the variable groups, an empty list is rejected — a run needs at least
     one level. Levels outside ``1..n_levels`` raise so a typo fails at config
     resolution rather than deep in ``.sel(model_level_number=...)``.
     """
-    if isinstance(value, (str, int)):
+    if isinstance(value, str):
+        if value.strip().lower() == "all":
+            return tuple(range(1, n_levels + 1))
         raise ValueError(
-            f"data_types override {key!r} must be a list of integer levels, "
-            f"got {value!r}"
+            f"data_types override {key!r} must be a list of integer levels or "
+            f'"all", got {value!r}'
+        )
+    if isinstance(value, int):
+        raise ValueError(
+            f"data_types override {key!r} must be a list of integer levels or "
+            f'"all", got {value!r}'
         )
     try:
         levels = sorted({int(v) for v in value})
@@ -455,8 +465,9 @@ def get_source(name, cfg=None):
     mismatch fails loudly at extraction (see ``extract_um_met.extract._pick``).
 
     ``model_levels`` may be given as an explicit list of model levels to load
-    (1-based, ≤ ``n_levels``); it overrides the default ``level_stride``
-    subsampling. It is validated (non-empty, in range) at resolution time.
+    (1-based, ≤ ``n_levels``), or the string ``"all"`` for every level the source
+    has; it overrides the default ``level_stride`` subsampling. It is validated
+    (non-empty, in range) at resolution time.
 
     Parameters
     ----------

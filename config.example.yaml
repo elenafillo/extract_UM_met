@@ -53,10 +53,13 @@ metadata:
 #
 # Model levels: by default `level_stride` keeps level 1 plus every Nth level.
 # Give an explicit `model_levels` list (1-based, ≤ the source's n_levels) to load
-# exactly those levels instead — it overrides level_stride.
+# exactly those levels instead — it overrides level_stride. `model_levels: "all"`
+# loads every level the source has (59 for UM_Global, 70 for NZCSM); note that
+# with the default stride of 3 this is ~3x the levels, so expect a store roughly
+# 3x the size and correspondingly slower to write.
 data_types:
   UM_Global:
-    # Global UM archive (Mk6–11).
+    # Global UM archive (Mk6–12).
     archive_directory: "/gws/ssde/j25a/name/met_archive/Global/"
     # Example: extract only temperature + humidity + winds, no averaged fields.
     # mass_vars:
@@ -71,6 +74,7 @@ data_types:
     # Level selection — pick ONE of these:
     # level_stride: 3               # level 1 + every 3rd level (the default)
     # model_levels: [1, 10, 20, 30, 40, 50, 59]   # exact levels (overrides stride)
+    # model_levels: "all"           # every level the source has
   UM1p5km:
     # 1.5 km UK LimitedArea archive (Mk2–4). Region tiles live under
     # UM1p5km_Mk{mk}PT/PT{region}/ inside this directory.
@@ -82,11 +86,20 @@ data_types:
 # Default edge size for latitude and longitude if not specified per domain
 default_edge_size: [100, 100]
 
+# Each domain may set `output_chunks` to control the on-disk chunk shape of its
+# yearly zarr store, keyed by time/levels/lat/lon (-1 = one chunk over the whole
+# dim). Only the dims you name change; the rest keep the default
+# {time: 1, levels: 3, lat: -1, lon: -1}, which suits scattered single-timestep
+# reads. Raise `time` if you mostly read long time series at a few points. It
+# only applies when a store is first created — an existing store keeps the layout
+# it was built with, so rerun with --overwrite to change it.
 domains:
   SA:
     domain_name: "SOUTHAMERICA"
     footprint: "GOSAT-BRAZIL-column_SOUTHAMERICA_201801.nc"
     world_regions_codes: [6, 9, 10, 13]
+    # output_chunks:
+    #   time: 24                   # only the dims you name are changed
     # Grid specification (optional; if absent, falls back to footprint mode with default edge sizes)
     grid:
       mode: footprint              # footprint (default) | regular | native

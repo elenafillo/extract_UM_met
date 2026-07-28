@@ -5,8 +5,10 @@ Appends monthly domain datasets to a yearly zarr store (one store per year,
 appended along the time dimension), and finalizes provenance attributes once a
 year's months are all written.
 
-The chunk layout keeps ``time=1`` (single-timestep scattered reads are the
-dominant access pattern), groups levels in 3s, and keeps lat/lon whole.
+The default chunk layout keeps ``time=1`` (single-timestep scattered reads are
+the dominant access pattern), groups levels in 3s, and keeps lat/lon whole. A
+domain can override it with ``output_chunks:`` in config when its own access
+pattern differs.
 """
 
 import datetime
@@ -18,10 +20,52 @@ import xarray as xr
 
 _ZARR_CHUNKS = {"time": 1, "lat": -1, "lon": -1, "levels": 3}
 
+# The output schema's dims — the only keys a domain may chunk on.
+CHUNK_DIMS = ("time", "levels", "lat", "lon")
 
-def _rechunk(ds):
+
+def resolve_output_chunks(domain_cfg):
+    """
+    Chunking for a domain's yearly store: the default with ``output_chunks:``
+    from the domain's config block merged over it.
+
+    Values are chunk lengths along that dim; ``-1`` means one chunk spanning the
+    whole dim. Naming only some dims leaves the rest at their default. An
+    unknown dim raises here, at config resolution, rather than silently leaving
+    the default in place.
+    """
+    override = domain_cfg.get("output_chunks")
+    if not override:
+        return dict(_ZARR_CHUNKS)
+
+    if not isinstance(override, dict):
+        raise ValueError(
+            f"domain output_chunks must be a mapping of {{dim: chunk_size}}, "
+            f"got {override!r}"
+        )
+    unknown = sorted(set(override) - set(CHUNK_DIMS))
+    if unknown:
+        raise ValueError(
+            f"domain output_chunks: unknown dim(s) {unknown}. "
+            f"Valid dims: {list(CHUNK_DIMS)}"
+        )
+
+    chunks = dict(_ZARR_CHUNKS)
+    for dim, size in override.items():
+        size = int(size)
+        if size == 0 or size < -1:
+            raise ValueError(
+                f"domain output_chunks: chunk size for {dim!r} must be a "
+                f"positive integer or -1 (whole dim), got {size}"
+            )
+        chunks[dim] = size
+    return chunks
+
+
+def _rechunk(ds, chunks=None):
     """Apply the on-disk zarr chunking, using -1 (whole) for unlisted dims."""
-    return ds.chunk({dim: _ZARR_CHUNKS.get(dim, -1) for dim in ds.dims})
+    chunks = chunks or _ZARR_CHUNKS
+    return ds.chunk({dim: chunks.get(dim, -1) for dim in ds.dims})
 
 
 def _to_zarr(ds, store_path, mode=None, append_dim=None, zarr_format=2, encoding=None):
@@ -97,7 +141,8 @@ def _build_encoding(ds, zarr_format):
     return encoding
 
 
-def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False):
+def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
+                               chunks=None):
     """
     Append a monthly dataset to a yearly zarr store.
 
@@ -113,13 +158,17 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False)
     first : bool, optional
         If True, create the store with ``mode='w'`` (setting the explicit
         encoding); otherwise append along time (encoding inherited from the store).
+    chunks : dict, optional
+        On-disk chunking, from :func:`resolve_output_chunks`. Defaults to
+        :data:`_ZARR_CHUNKS`. Only meaningful on the first write — later appends
+        inherit the layout the store was created with.
 
     Returns
     -------
     str
         Path to the updated zarr store.
     """
-    ds = _rechunk(month_ds)
+    ds = _rechunk(month_ds, chunks)
 
     if first:
         encoding = _build_encoding(ds, zarr_format)
@@ -130,7 +179,7 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False)
     return str(store_path)
 
 
-def finalize_attrs(store_path, extra_attrs=None):
+def finalize_attrs(store_path, extra_attrs=None, chunks=None):
     """
     Write provenance/completeness attributes onto a yearly zarr store.
 
@@ -145,6 +194,9 @@ def finalize_attrs(store_path, extra_attrs=None):
         Path to the yearly zarr store.
     extra_attrs : dict, optional
         Additional attributes to record (e.g., grid_mode, native_grid_info).
+    chunks : dict, optional
+        The chunking the store was written with, recorded as ``zarr_chunks``.
+        Defaults to :data:`_ZARR_CHUNKS`.
 
     Returns
     -------
@@ -169,7 +221,7 @@ def finalize_attrs(store_path, extra_attrs=None):
         "n_levels": int(sizes.get("levels", -1)),
         "time_start": str(times[0]),
         "time_end": str(times[-1]),
-        "zarr_chunks": str(_ZARR_CHUNKS),
+        "zarr_chunks": str(chunks or _ZARR_CHUNKS),
         "months_present": months_present,
         "n_months_present": len(months_present),
         "missing_months": missing_months,

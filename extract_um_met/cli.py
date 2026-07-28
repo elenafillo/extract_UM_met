@@ -31,7 +31,7 @@ from .grid import extract_native_grid, save_native_grid, build_target_grid
 from .extract import extract_region, extract_single
 from .join import join_month, cleanup_region_intermediates
 from .sources import get_source
-from .zarr_io import append_month_to_year_store, finalize_attrs
+from .zarr_io import append_month_to_year_store, finalize_attrs, resolve_output_chunks
 
 
 # One sample timestep per Mk, for make-native-grid. The native grid is fixed
@@ -60,15 +60,6 @@ def _make_native_grid_parser(subparsers):
         type=int,
         default=None,
         help='Mk version to extract (6, 7, 8, 9, 10, 11, 12). If None, extracts all available.'
-    )
-
-    parser.add_argument(
-        '--sample-date',
-        type=str,
-        default=None,
-        help='Timestep (YYYYMMDDHHMM) to read the grid from, overriding the '
-             'per-Mk default in MK_SAMPLE_TIMESTEPS. Only valid with --mk, '
-             'since one timestep cannot belong to several Mk blocks.'
     )
 
     parser.add_argument(
@@ -116,10 +107,6 @@ def cmd_make_native_grid(args):
     else:
         mks = sorted(MK_SAMPLE_TIMESTEPS)
 
-    if args.sample_date is not None and args.mk is None:
-        print("ERROR: --sample-date applies to one Mk block; pass --mk too")
-        sys.exit(1)
-
     # Native grids are a Global-UM concept; take the archive path from that source.
     source = get_source("UM_Global", cfg)
     met_archive_dir = source.archive_directory
@@ -150,7 +137,7 @@ def cmd_make_native_grid(args):
                 print(f"  Skipping Mk {mk}")
                 continue
 
-            sample_date = args.sample_date or MK_SAMPLE_TIMESTEPS[mk]
+            sample_date = MK_SAMPLE_TIMESTEPS[mk]
             print(f"Sample timestep: {sample_date}")
 
             # Extract grids for each region
@@ -465,7 +452,8 @@ def _read_present_days(store_path, year):
 
 
 def _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
-                   zarr_format, periods, zarr_dir, args, source, suffix=None):
+                   zarr_format, periods, zarr_dir, args, source, suffix=None,
+                   output_chunks=None):
     """
     Run the extract → append path for a non-tiled single-file source (e.g. NZCSM).
 
@@ -521,10 +509,12 @@ def _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
             day_ds = extract_single(domain_key, day_key, cfg, target=target, source=source,
                                     suffix=suffix)
             first = fresh and i == 0
-            append_month_to_year_store(day_ds, store_path, zarr_format=zarr_format, first=first)
+            append_month_to_year_store(day_ds, store_path, zarr_format=zarr_format,
+                                       first=first, chunks=output_chunks)
             print(f"  appended {day_key} (first={first})")
 
-        finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode, "data_type": source.name})
+        finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode, "data_type": source.name},
+                       chunks=output_chunks)
         print(f"    finalized store attributes for {year}")
         written_stores.append(store_path)
 
@@ -538,7 +528,8 @@ def _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
 
 
 def _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
-                    zarr_format, ymd, zarr_dir, args, source, suffix=None):
+                    zarr_format, ymd, zarr_dir, args, source, suffix=None,
+                    output_chunks=None):
     """
     Run the full extract → join → write path for a single day.
 
@@ -584,14 +575,16 @@ def _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
         target=target, use_interp=use_interp, scratch_dir=scratch_dir, day=day,
         source=source, suffix=suffix,
     )
-    append_month_to_year_store(day_ds, store_path, zarr_format=zarr_format, first=True)
+    append_month_to_year_store(day_ds, store_path, zarr_format=zarr_format, first=True,
+                               chunks=output_chunks)
     print(f"    wrote {tag} to {store_path}")
 
     if not args.keep_intermediates:
         cleanup_region_intermediates(domain_name, year, month, scratch_dir, day=day,
                                      suffix=suffix)
 
-    finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode, "single_day": tag})
+    finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode, "single_day": tag},
+                   chunks=output_chunks)
     print("    finalized store attributes.")
     print("\nDone (single-day smoke test).")
     print(f"Saved to:\n  {store_path}")
@@ -615,6 +608,9 @@ def cmd_run(args):
         cfg.data["domains"][domain_key] = domain_cfg
     grid_mode = domain_cfg.get("grid", {}).get("mode", "footprint")
 
+    # Resolved up front so a bad output_chunks fails before any extraction runs.
+    output_chunks = resolve_output_chunks(domain_cfg)
+
     zarr_format = args.zarr_format if args.zarr_format is not None else cfg.get("zarr_format", 2)
 
     source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
@@ -629,18 +625,21 @@ def cmd_run(args):
     suffix_note = f"  |  suffix: {suffix}" if suffix else ""
     print(f"Domain: {domain_name} ({domain_key})  |  data type: {source.name}  |  "
           f"grid mode: {grid_mode}  |  zarr v{zarr_format}{suffix_note}")
+    print(f"Output chunks: {output_chunks}")
 
     # Non-tiled sources (e.g. NZCSM): single file per timestep, no join; extract
     # and append a day at a time.
     if not source.tiled:
         _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
-                       zarr_format, periods, zarr_dir, args, source, suffix=suffix)
+                       zarr_format, periods, zarr_dir, args, source, suffix=suffix,
+                       output_chunks=output_chunks)
         return
 
     # Single-day smoke test: write a separate debug store, no resume/append.
     if len(periods) == 1 and periods[0][2] is not None:
         _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
-                        zarr_format, periods[0], zarr_dir, args, source, suffix=suffix)
+                        zarr_format, periods[0], zarr_dir, args, source, suffix=suffix,
+                        output_chunks=output_chunks)
         return
 
     # Group requested months by year (one yearly store each).
@@ -726,7 +725,8 @@ def cmd_run(args):
             )
 
             first = fresh and i == 0
-            append_month_to_year_store(month_ds, store_path, zarr_format=zarr_format, first=first)
+            append_month_to_year_store(month_ds, store_path, zarr_format=zarr_format,
+                                       first=first, chunks=output_chunks)
             print(f"  appended {year}-{month:02d} to store (first={first})")
 
             if not args.keep_intermediates:
@@ -739,6 +739,7 @@ def cmd_run(args):
                 "grid_mode": grid_mode,
                 "native_canonical_mk": int(canonical_mk) if canonical_mk else "n/a",
             },
+            chunks=output_chunks,
         )
         print(f"    finalized store attributes for {year}")
         written_stores.append(store_path)
