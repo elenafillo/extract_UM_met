@@ -22,7 +22,8 @@ module purge
 module load jaspy
 
 export TMPDIR=/work/scratch-pw5/$USER/tmp
-mkdir -p "$TMPDIR"
+# -p races on parallel scratch (stale stat after EEXIST); tolerate a concurrent create.
+mkdir -p "$TMPDIR" 2>/dev/null || [ -d "$TMPDIR" ]
 
 echo "Joining $DOMAIN $DATE"
 

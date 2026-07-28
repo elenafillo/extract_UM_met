@@ -189,7 +189,12 @@ def join_month(
     scratch_root = resolve_config_value(cfg.get("scratch_path", ""), cfg.data)
     if scratch_dir is None:
         scratch_dir = os.path.join(scratch_root, "files")
-    os.makedirs(scratch_dir, exist_ok=True)
+    
+    try:
+        os.makedirs(scratch_dir, exist_ok=True)
+    except FileExistsError:
+        pass
+    
 
     if source is None:
         source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)

@@ -72,7 +72,10 @@ def save_native_grid(lat_array, lon_array, mk_version, output_dir="data/", world
         If provided, includes region ID in filename for reference.
     """
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        pass
 
     if world_region_id is not None:
         filename = output_dir / f"native_grid_Mk{mk_version}_region{world_region_id}.nc"

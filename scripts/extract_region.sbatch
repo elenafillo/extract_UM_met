@@ -5,7 +5,7 @@
 #
 # Sizing is per region-month: ~23 min and well under 100 GB for the largest
 # NORTHAFRICA region observed. Raise --mem if a bigger domain OOMs.
-#SBATCH --mem=100GB
+#SBATCH --mem=200GB
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --output=scripts/logs/%x_%A_%a.out
@@ -20,7 +20,8 @@ module purge
 module load jaspy
 
 export TMPDIR=/work/scratch-pw5/$USER/tmp
-mkdir -p "$TMPDIR"
+# -p races on parallel scratch (stale stat after EEXIST); tolerate a concurrent create.
+mkdir -p "$TMPDIR" 2>/dev/null || [ -d "$TMPDIR" ]
 
 IFS=':' read -ra REGION_LIST <<< "$REGIONS"
 N_REGIONS=${#REGION_LIST[@]}
