@@ -26,7 +26,7 @@ from .sources import get_source
 from .metadata import to_zarr_schema, add_delta_attrs, apply_cf_metadata
 from .rotated import (
     latlon_target_cube,
-    regrid_to_latlon,
+    latlon_regridder,
     rotate_winds_true_north,
     rotated_pole_attrs,
 )
@@ -540,10 +540,16 @@ def extract_single(
 
         # provenance of the native grid (rotated-pole params), from a mass cube
         first_name, first_lvl = source.mass_vars[0]
-        pole_attrs = rotated_pole_attrs(_pick(cube, first_name, first_lvl))
+        first_mass_cube = _pick(cube, first_name, first_lvl)
+        pole_attrs = rotated_pole_attrs(first_mass_cube)
+
+        # Every field regridded below sits on this same rotated mass grid — the
+        # winds are co-located onto it first — so the source→target mapping is
+        # built once here rather than recomputed for each of the ~10 cubes.
+        regridder = latlon_regridder(first_mass_cube, target_cube)
 
         def _regrid_da(c, name):
-            da = _dataarray_from_iris_safely(regrid_to_latlon(c, target_cube)).rename(name)
+            da = _dataarray_from_iris_safely(regridder(c)).rename(name)
             drop = [x for x in ("level_height", "sigma", "level_height_0", "sigma_0")
                     if x in da.coords]
             return da.drop_vars(drop) if drop else da
