@@ -1,4 +1,4 @@
-"""Sphinx configuration for the extract_um_met documentation site.
+"""Sphinx configuration for the extract_UM_met documentation site.
 
 The how-to pages in ``docs/`` are symlinks into ``How_Tos/``, which stays the
 single source of truth — edit the files there, not here.
@@ -9,9 +9,9 @@ from datetime import date
 # Change this if the repo is renamed or moved. Note the how-tos also carry
 # absolute github.com links (to source files, which have no page on this site);
 # those are pinned to the zarr_stores branch until it merges to main.
-GITHUB_REPO = "https://github.com/elenafillo/extract_um_met"
+GITHUB_REPO = "https://github.com/elenafillo/extract_UM_met"
 
-project = "extract_um_met"
+project = "extract_UM_met"
 author = "Elena Fillola"
 copyright = f"{date.today().year}, {author}"
 
@@ -25,7 +25,7 @@ myst_heading_anchors = 3
 exclude_patterns = ["_build"]
 
 html_theme = "shibuya"
-html_title = "extract_um_met"
+html_title = "extract_UM_met"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 

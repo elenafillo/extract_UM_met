@@ -129,7 +129,7 @@ unless `--keep-intermediates`). They exist to bound peak memory, not as a produc
 One-off; see [how_to_datatypes.md](how_to_datatypes.md#5-native-grids-data).
 
 ```bash
-python -m extract_um_met make-native-grid --sample-date 201601   # all Mks
+python -m extract_um_met make-native-grid                        # all Mks
 python -m extract_um_met make-native-grid --mk 9                 # one Mk
 python -m extract_um_met make-native-grid --dry-run             # no write
 python -m extract_um_met make-native-grid --output-dir /custom/path/

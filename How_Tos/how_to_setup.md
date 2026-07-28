@@ -1,4 +1,4 @@
-# How To: Set Up `extract_um_met`
+# How To: Set Up `extract_UM_met`
 
 First-time setup on JASMIN: load the Python environment, create your temp
 directory, and write your personal `config.yaml`. Do this once per account; after
@@ -84,7 +84,7 @@ cp config.example.yaml config.yaml
 ```
 
 Then edit `config.yaml`. The shared structure (domains, data-type paths, grid
-specs) is versioned in [`config.example.yaml`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/config.example.yaml); the only
+specs) is versioned in [`config.example.yaml`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/config.example.yaml); the only
 strictly personal field is `met_extract_author`.
 
 ### Fields to check / fill
@@ -187,7 +187,7 @@ good. Move on to [how_to_extract.md](how_to_extract.md) for real runs.
 - [ ] `module purge && module load jaspy`
 - [ ] `export TMPDIR=/work/scratch-pw5/$USER/tmp && mkdir -p "$TMPDIR"`
 - [ ] `cp config.example.yaml config.yaml` and edit paths + `met_extract_author`
-- [ ] `python -m extract_um_met make-native-grid --sample-date 201601`
+- [ ] `python -m extract_um_met make-native-grid`
 - [ ] `python -m extract_um_met run --domain SA --date 20160115` (smoke test)
 </content>
 </invoke>

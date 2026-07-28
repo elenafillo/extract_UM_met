@@ -1,13 +1,13 @@
-# extract_um_met — Development Roadmap
+# extract_UM_met — Development Roadmap
 
 Status, remaining work, and open questions for the `extract_um_met` package. This
 file is the **planning** document; for how to install, configure, and run the
-tool, and for the codebase map, see [`How_Tos/`](https://github.com/elenafillo/extract_um_met/tree/zarr_stores/How_Tos/):
+tool, and for the codebase map, see [`How_Tos/`](https://github.com/elenafillo/extract_UM_met/tree/zarr_stores/How_Tos/):
 
-- [how_to_setup.md](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/How_Tos/how_to_setup.md) — environment & config
-- [how_to_datatypes.md](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/How_Tos/how_to_datatypes.md) — data types, grids, regions
-- [how_to_extract.md](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/How_Tos/how_to_extract.md) — the CLI
-- [how_to_code.md](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/How_Tos/how_to_code.md) — module map & pipeline
+- [how_to_setup.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_setup.md) — environment & config
+- [how_to_datatypes.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_datatypes.md) — data types, grids, regions
+- [how_to_extract.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_extract.md) — the CLI
+- [how_to_code.md](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/How_Tos/how_to_code.md) — module map & pipeline
 
 ---
 

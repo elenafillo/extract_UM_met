@@ -175,15 +175,15 @@ Variations handled in `cli.py`:
 
 | To… | Edit |
 | --- | ---- |
-| Add a **data type** (new product/archive) | add a `MetSource` to `SOURCES` in [`sources.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/sources.py); set its archive path in `config.yaml → data_types:` |
-| Add a **grid mode** | extend `build_target_grid` and add a `_build_*_grid` in [`grid.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/grid.py) |
-| Change **which variables** are kept | edit the `*_vars` tuples on the `MetSource` in [`sources.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/sources.py) |
+| Add a **data type** (new product/archive) | add a `MetSource` to `SOURCES` in [`sources.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/sources.py); set its archive path in `config.yaml → data_types:` |
+| Add a **grid mode** | extend `build_target_grid` and add a `_build_*_grid` in [`grid.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/grid.py) |
+| Change **which variables** are kept | edit the `*_vars` tuples on the `MetSource` in [`sources.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/sources.py) |
 | Change **level subsampling** | `level_stride` on the `MetSource` (or `levels()`) |
-| Add a **region scheme** (e.g. the UK-16 tiles) | implement it in `_REGION_SCHEMES` ([`sources.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/sources.py)) + [`regions.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/regions.py) |
-| Change **output encoding / chunking** | [`zarr_io.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/zarr_io.py) (`_ZARR_CHUNKS`, `_build_encoding`) |
-| Change **CF / provenance attrs** | [`metadata.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/metadata.py) + the `metadata:` config block |
-| Add a **CLI option / subcommand** | [`cli.py`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/extract_um_met/cli.py) |
+| Add a **region scheme** (e.g. the UK-16 tiles) | implement it in `_REGION_SCHEMES` ([`sources.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/sources.py)) + [`regions.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/regions.py) |
+| Change **output encoding / chunking** | [`zarr_io.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/zarr_io.py) (`_ZARR_CHUNKS`, `_build_encoding`) |
+| Change **CF / provenance attrs** | [`metadata.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/metadata.py) + the `metadata:` config block |
+| Add a **CLI option / subcommand** | [`cli.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/cli.py) |
 | Add a **domain** | `config.yaml → domains:` only (no code) — see [how_to_extract.md](how_to_extract.md#6-add-a-new-domain) |
 
-Open questions and planned work are tracked in [`usage.md`](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/usage.md).
+Open questions and planned work are tracked in [`usage.md`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/usage.md).
 </content>

@@ -1,4 +1,4 @@
-# extract_um_met
+# extract_UM_met
 
 Extract Numerical Weather Prediction (NWP) meteorology from the Met Office **Unified Model (UM)** — `.pp` files archived on [JASMIN](https://www.jasmin.ac.uk/) and [CEDA](https://archive.ceda.ac.uk/) — into analysis-ready yearly [Zarr](https://zarr.dev/) stores.
 
@@ -122,7 +122,7 @@ cd extract_um_met
 module purge && module load jaspy                              # JASMIN Python env
 export TMPDIR=/work/scratch-pw5/$USER/tmp && mkdir -p "$TMPDIR"
 cp config.example.yaml config.yaml                             # then edit your copy
-python -m extract_um_met make-native-grid --sample-date 201601  # one-off
+python -m extract_um_met make-native-grid                       # one-off
 python -m extract_um_met run --domain SA --date 20160115        # single-day smoke test
 ```
 

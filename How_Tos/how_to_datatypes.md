@@ -256,7 +256,7 @@ interval end):
 coords to `lat` / `lon` / `levels`.
 
 > The full raw UM variable inventory (both `I` and `M` sets, ~30 fields) is
-> listed in the [top-level README](https://github.com/elenafillo/extract_um_met/blob/zarr_stores/README.md#variable-lists); only the 12
+> listed in the [top-level README](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/README.md#variable-lists); only the 12
 > above are carried into the zarr stores.
 
 ---
