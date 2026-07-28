@@ -29,8 +29,8 @@ which is why regridding onto a stable target grid is part of the job:
 
 | Mk | Dates | Native (Δlat × Δlon) | Status |
 | --- | ----- | -------------------- | ------ |
-| Mk6 | Jan 2011 – Mar 2013 | 0.234° × 0.352° | extractable |
-| Mk7 | Apr 2013 – Jun 2014 | 0.234° × 0.352° | extractable |
+| Mk6 | Jan 2011 – Apr 2013 | 0.234° × 0.352° | extractable |
+| Mk7 | May 2013 – Jun 2014 | 0.234° × 0.352° | extractable |
 | Mk8 | Jul 2014 – Jul 2015 | 0.156° × 0.234° | extractable |
 | Mk9 | Aug 2015 – Jun 2017 | 0.156° × 0.234° | extractable |
 | Mk10 | Jul 2017 – May 2022 | 0.094° × 0.141° | extractable |
@@ -95,6 +95,8 @@ domains:
       mode: footprint                        # footprint | regular | native
       edge_size_lat: [100, 100]
       edge_size_lon: [85, 100]
+    output_chunks:                           # optional; on-disk chunking
+      time: 24
 ```
 
 Not sure which tiles you need? Ask:
@@ -118,7 +120,7 @@ To extract an existing domain onto a *different* grid, don't add a second domain
 ## Quick start
 
 ```bash
-cd extract_um_met
+cd extract_UM_met
 module purge && module load jaspy                              # JASMIN Python env
 export TMPDIR=/work/scratch-pw5/$USER/tmp && mkdir -p "$TMPDIR"
 cp config.example.yaml config.yaml                             # then edit your copy

@@ -124,11 +124,13 @@ coords.
   `.sel()` for off-res months instead of interpolation.
 - **Zarr format:** write `zarr_format=2` by default (readable by both zarr 2.18.7
   and 3.x); switch to `3` only once all consumers are on zarr 3.x.
-- **Per-region intermediates** are single-file NetCDF in `{scratch}/files/`
-  (transient; deleted after the month appends unless `--keep-intermediates`).
-  NetCDF over zarr here is deliberate — one file per region is cheaper on shared
-  scratch and easy to inspect; their purpose is to bound peak memory, not to be a
-  product.
+- **Per-region intermediates** are zarr stores in `{scratch}/files/` (transient;
+  deleted after the month appends unless `--keep-intermediates`). They exist to
+  bound peak memory, not to be a product. Zarr over NetCDF is deliberate: each
+  region is chunked whole in lat/lon/levels with `time` in blocks of 24, so dask
+  writes the chunks in parallel and the join streams a block at a time instead of
+  pulling a whole month into memory. They are written in the same `zarr_format`
+  as the yearly store, so scratch and output never straddle two formats.
 - **Variable selection** excludes the 1.5 m `air_temperature` (exact parity with
   the original script). Selection is by name + level presence, so an archive or
   iris-ordering change raises a clear error rather than mis-selecting.

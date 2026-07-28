@@ -10,7 +10,7 @@ under SLURM.
 **Every command assumes:**
 
 ```bash
-cd /home/users/$USER/extract_um_met     # config.yaml is read from here
+cd /home/users/$USER/extract_UM_met     # config.yaml is read from here
 module purge && module load jaspy
 export TMPDIR=/work/scratch-pw5/$USER/tmp && mkdir -p "$TMPDIR"
 ```
@@ -26,7 +26,7 @@ python -m extract_um_met <command> [options]
 | Command | Does | Use when |
 | ------- | ---- | -------- |
 | **`run`** | extract → join → append to yearly zarr store (with resume) | the main workflow — producing data |
-| **`extract`** | write per-region NetCDF intermediates only | debugging / retrying a flaky region |
+| **`extract`** | write per-region zarr intermediates only | debugging / retrying a flaky region |
 | **`make-native-grid`** | save native UM grids to `data/` | one-off setup; before `native` mode |
 
 Run any command with `-h` to see its options, e.g. `python -m extract_um_met run -h`.
@@ -57,7 +57,7 @@ python -m extract_um_met run --domain SA --date 201601 --dry-run
 | `--dry-run` | resolve config/domain/dates and report; write nothing |
 | `--grid-mode {footprint,regular,native}` | override the domain's config grid mode |
 | `--zarr-format {2,3}` | on-disk zarr version (default: `config.zarr_format`) |
-| `--keep-intermediates` | keep per-region NetCDFs in scratch (default: delete after append) |
+| `--keep-intermediates` | keep per-region intermediates in scratch (default: delete after append) |
 | `--suffix TAG` | tag the store as `{DOMAIN}_{TAG}_Met_...` so a variant sits beside the main store (see below) |
 
 ### The `--date` forms
@@ -95,7 +95,7 @@ python -m extract_um_met run --domain NA --date 2014 --grid-mode native --suffix
 
 Use it to keep a `--grid-mode` / config experiment separate from the production
 store. Each suffix has its **own** resume state, and its per-region scratch
-intermediates are tagged too (`{DOMAIN}_{TAG}_Met_..._{region}.nc`), so variants
+intermediates are tagged too (`{DOMAIN}_{TAG}_Met_..._{region}.zarr`), so variants
 never share intermediates. A leading underscore on the tag is trimmed
 (`--suffix _coarse` == `--suffix coarse`).
 
@@ -103,8 +103,9 @@ never share intermediates. A leading underscore on the tag is trimmed
 
 ## 3. `extract` — per-region intermediates only
 
-Writes per-region NetCDF intermediates to `{scratch}/files/` without joining or
-touching zarr. Useful to isolate one region or inspect an intermediate.
+Writes per-region zarr intermediates to `{scratch}/files/` without joining or
+appending to the yearly store. Useful to isolate one region or inspect an
+intermediate.
 
 ```bash
 python -m extract_um_met extract --domain SA --date 201601             # all regions, month
@@ -117,7 +118,11 @@ python -m extract_um_met extract --domain SA --date 20160115 --region 6  # one r
 | `--domain` *(required)* | domain key or `domain_name` |
 | `--date` *(required)* | `YYYYMM` (month) or `YYYYMMDD` (day) — **no** `YYYY` form here |
 | `--region` | a single world-region ID; omit to do all of the domain's regions |
-| `--suffix TAG` | tag the intermediate filenames `{DOMAIN}_{TAG}_Met_...` (same tag `run` uses) |
+| `--suffix TAG` | tag the intermediate names `{DOMAIN}_{TAG}_Met_...` (same tag `run` uses) |
+
+Each region lands as `{scratch}/files/{DOMAIN}_Met_{date}_{region}.zarr`. On a
+non-tiled source (e.g. `NZCSM`) there are no regions, so `extract` writes the
+whole domain to a single `{DOMAIN}_Met_{date}.zarr` instead.
 
 These intermediates are transient (a `run` deletes them after the month appends,
 unless `--keep-intermediates`). They exist to bound peak memory, not as a product.
@@ -137,10 +142,12 @@ python -m extract_um_met make-native-grid --output-dir /custom/path/
 
 | Option | Meaning |
 | ------ | ------- |
-| `--mk` | Mk version (6–11); omit for all available |
-| `--sample-date` | `YYYYMM` to sample a file from (default `201601`) |
+| `--mk` | Mk version (6–12); omit for all available |
 | `--output-dir` | override `config.native_grid_directory` |
 | `--dry-run` | report what it would extract; write nothing |
+
+Each Mk is read from a fixed sample timestep (`cli.MK_SAMPLE_TIMESTEPS`); the
+grid does not vary within an Mk block, so there is nothing to choose.
 
 ---
 
@@ -154,7 +161,7 @@ python -m extract_um_met run --domain SA --date 2016
    └─ for each month:
         ├─ extract each world region        (load .pp(.gz) → align winds →
         │                                     build time dim → regrid → slice →
-        │                                     write per-region NetCDF to scratch)
+        │                                     write per-region zarr to scratch)
         ├─ join regions → domain Dataset     (concat lat within lon columns, then
         │                                     lon; fill seams; rename; stamp CF)
         └─ append the month to the yearly zarr store
@@ -164,7 +171,8 @@ OUTPUT: {zarr_save_directory}/SOUTHAMERICA/SOUTHAMERICA_Met_2016.zarr
 ```
 
 Non-tiled sources (e.g. `NZCSM`) skip the join: each day is extracted whole-domain
-and appended one day-batch at a time.
+and appended one day-batch at a time, straight from memory — no per-region
+intermediate is staged, so `--keep-intermediates` does nothing for them.
 
 ---
 
@@ -183,6 +191,10 @@ domains:
       mode: footprint                 # footprint | regular | native
       edge_size_lat: [100, 100]
       edge_size_lon: [85, 100]
+    # Optional: on-disk chunking of this domain's store; omitted dims keep the
+    # default {time: 1, levels: 3, lat: -1, lon: -1}. See how_to_datatypes.md §7.
+    # output_chunks:
+    #   time: 24
 ```
 
 Then dry-run, then smoke-test a single day, then run for real:
@@ -221,7 +233,7 @@ node. A minimal template using the current CLI:
 #SBATCH --error=logs/%x_%j.err
 #SBATCH -t 08:00:00
 
-cd /home/users/$USER/extract_um_met
+cd /home/users/$USER/extract_UM_met
 module purge
 module load jaspy
 export TMPDIR=/work/scratch-pw5/$USER/tmp

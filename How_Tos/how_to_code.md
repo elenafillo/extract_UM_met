@@ -12,7 +12,7 @@ type, a grid mode, or a variable) rather than just use it.
 ## 1. Repo layout
 
 ```
-extract_um_met/
+extract_UM_met/                    # ← the repo
 ├── extract_um_met/                # ← the package (all current logic)
 │   ├── __init__.py             # package metadata (version)
 │   ├── __main__.py             # entry point: `python -m extract_um_met`
@@ -109,14 +109,20 @@ exploratory root notebooks (`check_joined_met.ipynb`, `exploring_met_data.ipynb`
   (`_pick`, so a changed archive raises instead of mis-selecting), align staggered
   winds onto the mass grid, keep 1-in-3 model levels, re-stamp 3-hour time-mean
   fields to the interval end (`_restamp_to_interval_end`), build a real `time`
-  dim, regrid onto the target (or pass through in native mode), slice to bounds,
-  and write a per-region NetCDF intermediate to scratch.
+  dim, regrid onto the target (or pass through in native mode), and slice to
+  bounds. `extract_region` always writes a per-region **zarr** intermediate to
+  scratch. `extract_single` only writes (a single whole-domain zarr store) when
+  called with `save=True`, which is the `extract` subcommand; under `run` it
+  returns the Dataset in memory and the non-tiled path appends it straight to the
+  store, so a normal non-tiled run touches scratch for nothing but decompressed
+  `.pp`. Every met intermediate is zarr, written in the config's `zarr_format` so
+  scratch and the yearly store never straddle two formats.
 - **`join.py`** — `join_month()` ensures each region's intermediate exists
   (calling `extract_region` for any missing), then stitches: concat regions in a
   longitude column along latitude, then concat the columns along longitude; fill
   1-cell seams; normalise/dedupe coords; rename to the `lat`/`lon`/`levels`
   schema; stamp CF + delta metadata. Returns a monthly domain `xr.Dataset`.
-  `cleanup_region_intermediates()` deletes the scratch NetCDFs afterwards.
+  `cleanup_region_intermediates()` deletes the scratch stores afterwards.
 - **`metadata.py`** — `apply_cf_metadata()` writes the CF coordinate attrs and
   the global attrs (Conventions/title/institution/source/… from the config
   `metadata:` block, empty fields omitted, plus an auto processing comment).
@@ -147,7 +153,7 @@ cli.cmd_run
          │        iris_io.load_files ── read .pp(.gz), decompress to scratch
          │        _pick cubes by name · align winds (rotated.* if rotated-pole)
          │        keep 1-in-3 levels · build time dim · regrid to target · slice
-         │        → write per-region NetCDF to {scratch}/files/
+         │        → write per-region zarr to {scratch}/files/
          │  stitch regions (concat lat within lon columns, then lon)
          │  fill seams · rename → lat/lon/levels (metadata.to_zarr_schema)
          │  metadata.apply_cf_metadata (CF + provenance from config)
@@ -177,10 +183,11 @@ Variations handled in `cli.py`:
 | --- | ---- |
 | Add a **data type** (new product/archive) | add a `MetSource` to `SOURCES` in [`sources.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/sources.py); set its archive path in `config.yaml → data_types:` |
 | Add a **grid mode** | extend `build_target_grid` and add a `_build_*_grid` in [`grid.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/grid.py) |
-| Change **which variables** are kept | edit the `*_vars` tuples on the `MetSource` in [`sources.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/sources.py) |
-| Change **level subsampling** | `level_stride` on the `MetSource` (or `levels()`) |
+| Change **which variables** are kept | `config.yaml → data_types:` (no code) — or the `*_vars` defaults on the `MetSource` in [`sources.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/sources.py) |
+| Change **level subsampling** | `level_stride` / `model_levels` in `config.yaml → data_types:` (no code) — defaults on the `MetSource` |
+| Change a store's **output chunking** | `output_chunks` on the domain in `config.yaml` (no code) — default `_ZARR_CHUNKS` in [`zarr_io.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/zarr_io.py) |
 | Add a **region scheme** (e.g. the UK-16 tiles) | implement it in `_REGION_SCHEMES` ([`sources.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/sources.py)) + [`regions.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/regions.py) |
-| Change **output encoding / chunking** | [`zarr_io.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/zarr_io.py) (`_ZARR_CHUNKS`, `_build_encoding`) |
+| Change **output encoding** (dtype, compressor) | [`zarr_io.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/zarr_io.py) (`_build_encoding`) |
 | Change **CF / provenance attrs** | [`metadata.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/metadata.py) + the `metadata:` config block |
 | Add a **CLI option / subcommand** | [`cli.py`](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/extract_um_met/cli.py) |
 | Add a **domain** | `config.yaml → domains:` only (no code) — see [how_to_extract.md](how_to_extract.md#6-add-a-new-domain) |

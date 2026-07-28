@@ -13,13 +13,17 @@ that you only touch `config.yaml` when you add a domain or change a path.
 
 ```bash
 cd /home/users/$USER            # or wherever you keep your repos
-git clone <repo-url> extract_um_met
-cd extract_um_met
+git clone https://github.com/elenafillo/extract_UM_met.git
+cd extract_UM_met
 ```
 
-Everything below is run **from the repo root** (`extract_um_met/`). The config
+Everything below is run **from the repo root** (`extract_UM_met/`). The config
 loader looks for `config.yaml` in the current working directory, so `python -m
 extract_um_met …` only works when you `cd` here first.
+
+Two similar names, one letter apart: **`extract_UM_met`** is the repo (the
+directory you `cd` into), **`extract_um_met`** is the Python package inside it
+(what you `import` and what `python -m` runs).
 
 ---
 
@@ -124,7 +128,8 @@ metadata:
 ### Data-type archive paths
 
 Each data type's structural properties live in code
-(`extract_um_met/sources.py`); in config you only set the **archive path** per type:
+(`extract_um_met/sources.py`). The only field you must set per type is the
+**archive path**:
 
 ```yaml
 data_types:
@@ -136,7 +141,12 @@ data_types:
     archive_directory: ""    # set once the NZCSM archive exists
 ```
 
-See [how_to_datatypes.md](how_to_datatypes.md) for what each type is.
+The same block optionally takes which **variables** and **model levels** to
+extract — both defaulted, so you can leave them out until you need them. See
+[how_to_datatypes.md](how_to_datatypes.md) for what each type is and
+[§6 there](how_to_datatypes.md#6-what-variables-get-extracted) for the tuning keys.
+The chunking of a domain's output store is set separately, per domain — see
+[§7](how_to_datatypes.md#7-output).
 
 ---
 
@@ -152,8 +162,7 @@ python -m extract_um_met make-native-grid
 This writes `data/native_grid_Mk{6..12}_*.nc` plus `_info.yaml` metadata. Each Mk
 is read from one known sample timestep (`cli.MK_SAMPLE_TIMESTEPS`) — the grid is
 fixed within an Mk block, so the choice does not matter, and naming it avoids
-listing the Mk10–12 folders, which hold hundreds of thousands of files. Override
-it for a single block with `--mk 12 --sample-date YYYYMMDDHHMM`. See
+listing the Mk10–12 folders, which hold hundreds of thousands of files. See
 [how_to_datatypes.md](how_to_datatypes.md#5-native-grids-data).
 
 Gzipped Mk6–9 files are decompressed into `scratch_path` from `config.yaml`, not

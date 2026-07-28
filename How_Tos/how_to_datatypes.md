@@ -25,8 +25,10 @@ one product.
 | **`NZCSM`** | TBD (config) | rotated pole | none (one file) | no join | L70 | 1-hourly | none | **partial** (12 vars ship; stresses deferred) |
 
 A domain picks its data type with `data_type:` in config (default `UM_Global`
-if omitted). Structural properties are code-defined; only **archive paths** (and
-a few tuning scalars) are overridable in `config.yaml → data_types:`.
+if omitted). Structural properties above are code-defined. What you *can* set per
+data type in `config.yaml → data_types:` is the **archive path**, and which
+**variables** and **model levels** to extract (§6). A domain separately sets the
+**output chunking** of its store (§7).
 
 - **Tiled** sources (`UM_Global`, `UM1p5km`) split the globe/UK into region
   files. A domain names the regions it needs (`world_regions_codes`), the
@@ -44,8 +46,8 @@ period at a given native resolution:
 
 | Mk | Dates | Native (Δlat × Δlon) | Grid size (lat × lon) |
 | --- | ----- | -------------------- | --------------------- |
-| Mk6 | Jan 2011 – Mar 2013 | 0.234375° × 0.351562° | 769 × 1024 |
-| Mk7 | Apr 2013 – Jun 2014 | 0.234375° × 0.351562° | 769 × 1024 |
+| Mk6 | Jan 2011 – Apr 2013 | 0.234375° × 0.351562° | 769 × 1024 |
+| Mk7 | May 2013 – Jun 2014 | 0.234375° × 0.351562° | 769 × 1024 |
 | Mk8 | Jul 2014 – Jul 2015 | 0.15625° × 0.234375° | 1152 × 1536 |
 | Mk9 | Aug 2015 – Jun 2017 | 0.15625° × 0.234375° | 1152 × 1536 |
 | Mk10 | Jul 2017 – May 2022 | 0.09375° × 0.140625° | 1920 × 2560 |
@@ -214,8 +216,7 @@ python -m extract_um_met make-native-grid --dry-run    # inspect, no write
 Each Mk is read from one known sample timestep (`cli.MK_SAMPLE_TIMESTEPS`); the
 grid is fixed within an Mk block, so which timestep does not matter. Naming it
 also keeps the command off a directory listing — the Mk10–12 folders hold
-hundreds of thousands of files. Override it for a single block with
-`--mk 12 --sample-date YYYYMMDDHHMM`.
+hundreds of thousands of files.
 
 Per Mk this writes into `data/`:
 
@@ -252,12 +253,52 @@ interval end):
 `atmosphere_downward_eastward_stress`, `atmosphere_downward_northward_stress`.
 
 **Model levels** are subsampled: level 1 plus every 3rd level up to L59 →
-`[1, 3, 6, 9, …, 57]` (`level_stride`, tunable per data type). Output renames
-coords to `lat` / `lon` / `levels`.
+`[1, 3, 6, 9, …, 57]` (`level_stride`). Output renames coords to `lat` / `lon` /
+`levels`.
 
-> The full raw UM variable inventory (both `I` and `M` sets, ~30 fields) is
-> listed in the [top-level README](https://github.com/elenafillo/extract_UM_met/blob/zarr_stores/README.md#variable-lists); only the 12
-> above are carried into the zarr stores.
+### Choosing your own variables and levels
+
+The lists above are defaults, not fixed: both are overridable per data type under
+`config.yaml → data_types:`, no code change needed.
+
+```yaml
+data_types:
+  UM_Global:
+    archive_directory: "/gws/ssde/j25a/name/met_archive/Global/"
+    # Just temperature, humidity and winds — no averaged fields.
+    mass_vars:
+      - [air_temperature, true]
+      - [specific_humidity, true]
+      - [surface_air_pressure, false]
+    wind_vars:
+      - [x_wind, true]
+      - [y_wind, true]
+    averaged_mass_vars: []
+    averaged_staggered_vars: []
+    model_levels: [1, 10, 20, 30, 40, 50, 59]   # or "all" for every level
+```
+
+| Key | Form | Notes |
+| --- | ---- | ----- |
+| `mass_vars`, `wind_vars` | `[cube_name, has_levels]` pairs | `has_levels` must match the archive — a mismatch fails loudly at extraction |
+| `averaged_mass_vars`, `averaged_staggered_vars` | bare cube names | 3-hour means, re-stamped to interval end |
+| `level_stride` | int | level 1 plus every Nth level (default 3) |
+| `model_levels` | list of ints, 1-based | exact levels; **overrides** `level_stride` |
+| `model_levels` | `"all"` | every level the source has (L59 global, L70 NZCSM) |
+
+Cube names must match the archive's iris names exactly — pick them from the
+[inventory in §8](#8-raw-um-variable-inventory). Any variable group may be set to
+`[]` to drop it entirely.
+
+Two things to watch. Editing these changes **every** run using that config, so
+keep a job-specific config (or a `--suffix`) for variant extractions rather than
+editing in place. And because stores are appended to per month, changing the
+variable or level selection part-way through a year will not line up with the
+months already written — rebuild that year with `--overwrite`.
+
+> The full raw UM variable inventory (both `I` and `M` sets, 30 fields) is in
+> [§8 below](#8-raw-um-variable-inventory); only the 12 above are carried into
+> the zarr stores.
 
 ---
 
@@ -274,6 +315,34 @@ Dims `time × levels × lat × lon`, chunked `{time:1, lat:-1, lon:-1, levels:3}
 float32 with zstd Blosc compression, CF metadata + provenance attrs. Single-day
 smoke tests write a separate `…_Met_{YYYYMMDD}.zarr` debug store.
 
+### Choosing the output chunks
+
+The chunk shape above is the default, tuned for the dominant access pattern:
+`time: 1` because scattered single-timestep reads are the common case, levels in
+groups of 3, lat/lon whole. A domain can override it in config:
+
+```yaml
+domains:
+  SA:
+    domain_name: "SOUTHAMERICA"
+    output_chunks:
+      time: 24            # only the dims you name change; the rest keep the default
+```
+
+Keys are `time`, `levels`, `lat`, `lon`; `-1` means one chunk spanning the whole
+dim. An unrecognised key (`latitude:`) raises at config load rather than silently
+leaving the default in place, and `run` prints the resolved chunks before it
+starts.
+
+Which way to go depends on how you read the store: keep `time: 1` for reading
+whole fields at scattered timesteps, and raise it when you mostly pull long time
+series at a few points, which the default makes expensive (one chunk touched per
+timestep).
+
+> **Applies at store creation only.** The chunk layout is fixed when a store is
+> first written; later months inherit it. Changing `output_chunks` for a year
+> that already exists has no effect until you rebuild it with `--overwrite`.
+
 Open one with:
 
 ```python
@@ -282,4 +351,63 @@ ds = xr.open_zarr(".../SOUTHAMERICA_Met_2016.zarr")
 print(ds)                 # dims, variables, coords
 print(ds.attrs)           # provenance: months_present, missing_months, grid_mode, …
 ```
+
+---
+
+## 8. Raw UM variable inventory
+
+Everything a `UM_Global` `.pp` file carries, by variable set. **✓** marks the 12
+fields extraction keeps (all from the `I` set) — see [§6](#6-what-variables-get-extracted).
+The rest are read past, not dropped for any quality reason; add one by editing
+the `*_vars` tuples on the `MetSource` in `sources.py`.
+
+The `I` set — instantaneous fields, plus the surface fluxes/stresses:
+
+| # | Name | Kept | Notes |
+| - | ---- | ---- | ----- |
+| 0  | `m01s03i026` | | unnamed STASH code |
+| 1  | `m01s03i319` | | has a "pseudo level" coord |
+| 2  | canopy water on tiles / (kg/m^2) | | |
+| 3  | `m01s03i462` | | unnamed STASH code |
+| 4  | `atmosphere_downward_eastward_stress` / (Pa) | ✓ | 3-hour mean |
+| 5  | `atmosphere_downward_northward_stress` / (Pa) | ✓ | 3-hour mean |
+| 6  | `air_pressure` / (Pa) | ✓ | model levels |
+| 7  | `air_pressure_at_sea_level` / (Pa) | ✓ | |
+| 8  | `air_temperature` / (K) | | the 1.5 m field — **deliberately excluded** |
+| 9  | `air_temperature` / (K) | ✓ | model levels |
+| 10 | `atmosphere_boundary_layer_thickness` | ✓ | |
+| 11 | `moisture_content_of_soil_layer` | | has a depth coord |
+| 12 | `specific_humidity` / (kg kg-1) | ✓ | model levels |
+| 13 | `surface_air_pressure` / (Pa) | ✓ | |
+| 14 | `surface_upward_sensible_heat_flux` / (W m-2) | ✓ | 3-hour mean |
+| 15 | `upward_air_velocity` / (m s-1) | ✓ | model levels |
+| 16 | `x_wind` / (m s-1) | ✓ | model levels, staggered |
+| 17 | `y_wind` / (m s-1) | ✓ | model levels, staggered |
+
+Entries 8 and 9 are **both** `air_temperature` — 8 is the 1.5 m diagnostic, 9 is
+the model-level field. This is why selection is by name **plus level presence**
+rather than by name alone, and why `_pick` raises on an archive change instead of
+silently taking the wrong one. Excluding the 1.5 m field keeps exact parity with
+the original pre-refactor script.
+
+The `M` set — cloud and precipitation fields. None are currently extracted:
+
+| # | Name | Notes |
+| - | ---- | ----- |
+| 0  | `m01s05i220` | unnamed STASH code |
+| 1  | `m01s05i223` | unnamed STASH code |
+| 2  | `air_pressure_at_convective_cloud_base` / (Pa) | |
+| 3  | `convective_rainfall_flux` / (kg m-2 s-1) | |
+| 4  | `convective_snowfall_flux` / (kg m-2 s-1) | |
+| 5  | `high_type_cloud_area_fraction` | |
+| 6  | `low_type_cloud_area_fraction` | |
+| 7  | `mass_fraction_of_cloud_ice_in_air` | has a height coord |
+| 8  | `mass_fraction_of_cloud_liquid_water_in_air` | has a height coord |
+| 9  | `medium_type_cloud_area_fraction` | |
+| 10 | `stratiform_rainfall_flux` | |
+| 11 | `stratiform_snowfall_flux` | |
+
+The set is the `{set}` token in the filename (§2) — a domain-month has an `I`
+file and an `M` file per timestep. Extraction reads only `I` today; pulling `M`
+fields would mean loading the second file too.
 </content>

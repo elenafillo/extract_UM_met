@@ -18,7 +18,7 @@ The data is accessible via JASMIN ([you will need to link your CEDA and JASMIN a
 ## Quick start (on Jasmin)
 
 ```bash
-cd extract_iris_met
+cd extract_UM_met
 module purge && module load jaspy                       # JASMIN Python env
 export TMPDIR=/work/scratch-pw5/$USER/tmp && mkdir -p "$TMPDIR"
 cp config.example.yaml config.yaml                      # then edit your copy
