@@ -63,6 +63,12 @@ environment in `config.yaml → data_types:`.
 - Save each data type's grid/coverage/resolution metadata under `data/<name>/`
   (mirroring `Global`) so provenance is per-source.
 
+### Changing variable and level selection
+- Move from defining the variables and levels at the data-type level, and doing so at the domain level
+
+### Check PR#5
+See PR [here](https://github.com/elenafillo/extract_UM_met/pull/5).
+
 ### Extraction correctness
 - **Native-grid cropping gap:** in `native` mode, extraction passes each region
   through at its full extent (sliced to region bounds only), so `lat_bounds` /
@@ -105,6 +111,7 @@ environment in `config.yaml → data_types:`.
   (majority by month count) and interpolates only off-resolution months.
   *Open check:* whether adjacent Mk native grids are nested, which would allow
   `.sel()` for off-res months instead of interpolation.
+  *TODO:* This should fit to the lower-resolution grid available by default, rather than the majority
 - **Zarr format:** write `zarr_format=2` by default (readable by both zarr 2.18.7
   and 3.x); switch to `3` only once all consumers are on zarr 3.x.
 - **Per-region intermediates** are zarr stores in `{scratch}/files/` (transient;
@@ -112,8 +119,7 @@ environment in `config.yaml → data_types:`.
   bound peak memory, not to be a product. Zarr over NetCDF is deliberate: each
   region is chunked whole in lat/lon/levels with `time` in blocks of 24, so dask
   writes the chunks in parallel and the join streams a block at a time instead of
-  pulling a whole month into memory. They are written in the same `zarr_format`
-  as the yearly store, so scratch and output never straddle two formats.
+  pulling a whole month into memory. 
 - **Variable selection** excludes the 1.5 m `air_temperature` (exact parity with
   the original script). Selection is by name + level presence, so an archive or
   iris-ordering change raises a clear error rather than mis-selecting.
@@ -122,3 +128,4 @@ environment in `config.yaml → data_types:`.
   per-region array tasks would land on different grids and the join would produce
   a mixed-grid store. `launch_met_array.sh` refuses native domains for this
   reason; resolving it means teaching `extract` the year's canonical grid.
+  *TODO:* Add capacity for both to work together

@@ -15,11 +15,8 @@ python -m extract_um_met run --domain SA --date 2016
 
 ## Accessing the data
 
-The raw archive is available via JASMIN — you will need to
-[link your CEDA and JASMIN accounts](https://help.ceda.ac.uk/article/5105-linking-your-jasmin-account)
-— or to [download directly from CEDA](https://data.ceda.ac.uk/badc/name_nwp/data/global)
-for 2015–2024 only. Running this tool on JASMIN reaches the full record,
-**2011-01 onward**.
+The raw archive is available via [JASMIN](https://www.jasmin.ac.uk/). If you have access to the NAME workspace, you can access the full record, from 2011 onwards. Otherwise, you can access data for 2015–2024 only by
+[linking your CEDA and JASMIN accounts](https://help.ceda.ac.uk/article/5105-linking-your-jasmin-account) or by [downloading the data directly from CEDA](https://data.ceda.ac.uk/badc/name_nwp/data/global).
 
 ## Three ideas shape everything else
 
