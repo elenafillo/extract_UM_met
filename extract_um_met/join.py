@@ -46,9 +46,16 @@ GLOBAL_REGION_GRID = [
 # break concatenation when they differ across files. forecast_period and
 # forecast_reference_time are intentionally NOT dropped — they are kept as
 # time-indexed provenance coordinates by the extraction step.
+#
+# dim_0 is a bare 0..N index: the leftover level of the MultiIndex that
+# _build_time_axis stacks, named for a forecast dimension the cubes leave
+# anonymous. It carries nothing, and it is not in every Mk's cubes — a store
+# created from one Mk and appended from another ends up with a dim_0 shorter
+# than its own time axis, which makes the store unopenable.
 _DROP_VARIABLES = [
     "level_height_0",
     "sigma_0",
+    "dim_0",
 ]
 
 
