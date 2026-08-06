@@ -42,7 +42,7 @@ def get_saved_region_bounds():
     return region_bounds
 
 
-def find_overlapping_regions(min_lat, max_lat, min_lon, max_lon):
+def find_overlapping_regions(min_lat, max_lat, min_lon, max_lon, region_bounds=None):
     """
     Find the world-region IDs that overlap a latitude/longitude box.
 
@@ -56,13 +56,18 @@ def find_overlapping_regions(min_lat, max_lat, min_lon, max_lon):
         Latitude limits of the box to test.
     min_lon, max_lon : float
         Longitude limits of the box to test.
+    region_bounds : dict, optional
+        Region layout to test against, as returned by
+        :func:`get_saved_region_bounds`. Defaults to the saved world-14 bounds;
+        pass a source's own bounds to test a different tiling.
 
     Returns
     -------
     list of int
         Region IDs that intersect the supplied bounding box.
     """
-    region_bounds = get_saved_region_bounds()
+    if region_bounds is None:
+        region_bounds = get_saved_region_bounds()
     overlapping_regions = []
 
     for region_id, (r_min_lat, r_max_lat, r_min_lon, r_max_lon) in region_bounds.items():

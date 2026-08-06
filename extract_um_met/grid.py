@@ -194,18 +194,97 @@ def build_target_grid(domain_cfg, cfg=None, mk=None):
 
     if mode == 'footprint':
         lat, lon = _build_footprint_grid(domain_cfg, grid_spec, cfg)
-        return lat, lon, True
+        use_interp = True
 
     elif mode == 'regular':
         lat, lon = _build_regular_grid(grid_spec)
-        return lat, lon, True
+        use_interp = True
 
     elif mode == 'native':
         lat, lon = _build_native_grid(domain_cfg, grid_spec, cfg, mk)
-        return lat, lon, False
+        use_interp = False
 
     else:
         raise ValueError(f"Unknown grid mode: {mode}")
+
+    lat, lon = _clip_to_regions(lat, lon, domain_cfg, cfg)
+    return lat, lon, use_interp
+
+
+def _clip_to_regions(lat, lon, domain_cfg, cfg):
+    """
+    Drop target grid points that no world region of this domain covers.
+
+    Extraction interpolates a region onto the whole target grid and then slices
+    the result to that region's own bounds, so a point outside every region
+    survives in no region file and vanishes from the joined domain without
+    comment. Clipping here instead keeps the grid a run reports equal to the grid
+    it writes, and says which regions are missing.
+
+    Parameters
+    ----------
+    lat, lon : np.ndarray
+        The 1D target grid arrays to clip.
+    domain_cfg : dict
+        Domain configuration, read for ``world_regions_codes`` and ``data_type``.
+    cfg : Config
+        Configuration object, used to resolve the source's region scheme.
+
+    Returns
+    -------
+    lat, lon : np.ndarray
+        The target grid restricted to the domain's regions.
+    """
+    from .sources import get_source
+
+    bounds = get_source(domain_cfg.get('data_type', 'UM_Global'), cfg).region_bounds()
+    if bounds is None:                    # single-file source: nothing is tiled
+        return lat, lon
+
+    regions = domain_cfg['world_regions_codes']
+
+    lat_keep = np.zeros(lat.shape, dtype=bool)
+    lon_keep = np.zeros(lon.shape, dtype=bool)
+    for region_id in regions:
+        r_min_lat, r_max_lat, r_min_lon, r_max_lon = bounds[region_id]
+        lat_keep |= (lat >= r_min_lat) & (lat <= r_max_lat)
+        if r_min_lon <= r_max_lon:
+            lon_keep |= (lon >= r_min_lon) & (lon <= r_max_lon)
+        else:                             # region crosses the dateline
+            lon_keep |= (lon >= r_min_lon) | (lon <= r_max_lon)
+
+    if not (lat_keep.all() and lon_keep.all()):
+        _warn_clipped(lat, lon, lat_keep, lon_keep, regions, bounds)
+
+    return lat[lat_keep], lon[lon_keep]
+
+
+def _warn_clipped(lat, lon, lat_keep, lon_keep, regions, bounds):
+    """Announce loudly which part of the target grid the domain's regions can't reach."""
+    missing = [
+        region_id
+        for region_id in find_overlapping_regions(
+            lat.min(), lat.max(), lon.min(), lon.max(), region_bounds=bounds
+        )
+        if region_id not in regions
+    ]
+
+    banner = "!" * 78
+    print(banner)
+    print("WARNING: the target grid extends beyond the domain's world regions.")
+    for name, values, keep in (("latitude ", lat, lat_keep), ("longitude", lon, lon_keep)):
+        if keep.all():
+            print(f"  {name}: all {values.size} points covered")
+        else:
+            kept = values[keep]
+            print(f"  {name}: DROPPED {int((~keep).sum())} of {values.size} points — "
+                  f"{values.min():.6f}..{values.max():.6f} clipped to "
+                  f"{kept.min():.6f}..{kept.max():.6f}")
+    print(f"  world_regions_codes = {sorted(regions)} does not cover the requested extent.")
+    if missing:
+        print(f"  Add region(s) {missing} to world_regions_codes to keep the full grid,")
+        print("  or reduce the edge padding so the grid stays inside the regions you have.")
+    print(banner)
 
 
 def _get_edge_size(domain_cfg, grid_spec, cfg, key):
@@ -273,15 +352,17 @@ def _build_footprint_grid(domain_cfg, grid_spec, cfg):
     delta_lat = grid_spec.get('dlat', _DEFAULT_DELTA_LAT)
     delta_lon = grid_spec.get('dlon', _DEFAULT_DELTA_LON)
 
+    # Padding starts at i=1: i=0 would re-add the footprint's own min/max, leaving
+    # a duplicated row and column mid-grid and one fewer padding cell per side.
     longitudes = np.array(sorted(
         longitudes
-        + [np.max(longitudes) + delta_lon * i for i in range(edge_size_lon[1])]
-        + [np.min(longitudes) - delta_lon * i for i in range(edge_size_lon[0])]
+        + [np.max(longitudes) + delta_lon * i for i in range(1, edge_size_lon[1] + 1)]
+        + [np.min(longitudes) - delta_lon * i for i in range(1, edge_size_lon[0] + 1)]
     ))
     latitudes = np.array(sorted(
         latitudes
-        + [np.max(latitudes) + delta_lat * i for i in range(edge_size_lat[1])]
-        + [np.min(latitudes) - delta_lat * i for i in range(edge_size_lat[0])]
+        + [np.max(latitudes) + delta_lat * i for i in range(1, edge_size_lat[1] + 1)]
+        + [np.min(latitudes) - delta_lat * i for i in range(1, edge_size_lat[0] + 1)]
     ))
 
     return latitudes, longitudes
