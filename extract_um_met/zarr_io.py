@@ -8,7 +8,8 @@ year's months are all written.
 The default chunk layout keeps ``time=1`` (single-timestep scattered reads are
 the dominant access pattern), groups levels in 3s, and keeps lat/lon whole. A
 domain can override it with ``output_chunks:`` in config when its own access
-pattern differs.
+pattern differs. The layout applies to the data variables only; coordinates are
+always written whole.
 """
 
 import datetime
@@ -63,9 +64,29 @@ def resolve_output_chunks(domain_cfg):
 
 
 def _rechunk(ds, chunks=None):
-    """Apply the on-disk zarr chunking, using -1 (whole) for unlisted dims."""
+    """
+    Apply the on-disk zarr chunking to the data variables, using -1 (whole) for
+    unlisted dims.
+
+    Only the data variables are chunked; the coordinates are loaded instead.
+    ``Dataset.chunk`` leaves dimension coordinates as pandas indexes but
+    dask-ifies the non-dimension ones (``dim_0``, ``forecast_period``,
+    ``forecast_reference_time`` along time; ``level_height``, ``sigma`` along
+    levels), which would then inherit the data-variable layout and land one
+    8-byte file per timestep. Merely skipping them is not enough: they would
+    stay dask-backed with whatever chunking they arrived with, the store would
+    adopt it, and since it need not divide a month the next append starts
+    mid-chunk and fails xarray's alignment check. Loaded, they are written
+    eagerly and whole, like ``time``.
+    """
     chunks = chunks or _ZARR_CHUNKS
-    return ds.chunk({dim: chunks.get(dim, -1) for dim in ds.dims})
+    loaded_coords = {
+        name: coord.compute() for name, coord in ds.coords.items() if coord.chunks
+    }
+    return ds.assign_coords(loaded_coords).assign({
+        name: var.chunk({dim: chunks.get(dim, -1) for dim in var.dims})
+        for name, var in ds.data_vars.items()
+    })
 
 
 def _to_zarr(ds, store_path, mode=None, append_dim=None, zarr_format=2, encoding=None):
@@ -74,12 +95,19 @@ def _to_zarr(ds, store_path, mode=None, append_dim=None, zarr_format=2, encoding
 
     ``zarr_format`` and ``encoding`` are only meaningful when creating the store
     (``mode='w'``); on append the format/encoding are fixed by the existing store.
+
+    Appends set ``align_chunks``: a month missing a timestep (a known-bad source
+    file dropped by ``load_files``, intersected away by the region join) leaves
+    the store an odd length, so the next month starts mid-chunk and xarray
+    rejects the write. Aligning rechunks the incoming month onto the store's
+    chunk grid instead.
     """
     kwargs = dict(consolidated=True)
     if mode is not None:
         kwargs["mode"] = mode
     if append_dim is not None:
         kwargs["append_dim"] = append_dim
+        kwargs["align_chunks"] = True
     if encoding is not None:
         kwargs["encoding"] = encoding
 
