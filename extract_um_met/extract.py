@@ -146,6 +146,86 @@ def _check_unique_time(ds, region_id, date):
         )
 
 
+# Coordinates that describe a single axis, mapped to the dimension they must never
+# acquire.
+_ONE_AXIS_COORDS = {
+    "level_height": "time",
+    "sigma": "time",
+    "forecast_period": "model_level_number",
+    "forecast_reference_time": "model_level_number",
+}
+
+
+def _fold_forecast_grid_onto_time(ds):
+    """
+    Put variables left on the (forecast_period, forecast_reference_time) grid onto
+    the shared time axis.
+
+    iris does not always merge every variable in a month the same way: for 2013-03
+    it put the leveled cubes straight onto a ``time`` dimension, so
+    :func:`_build_time_axis` took its early return and the level-less surface
+    fields were never stacked. Each (reference time, period) pair is exactly one
+    valid time, so stack the pair and re-stamp it with their sum.
+    """
+    if "forecast_period" not in ds.dims:
+        return ds
+
+    names = sorted(v for v in ds.data_vars if "forecast_period" in ds[v].dims)
+    log(f"WARNING: {', '.join(names)} left on the (forecast_period, "
+        f"forecast_reference_time) grid; folding onto the valid-time axis")
+
+    folded = ds[names].stack(newtime=("forecast_period", "forecast_reference_time"))
+    fp = folded["forecast_period"].values
+    frt = folded["forecast_reference_time"].values
+    folded = folded.drop_vars(["forecast_period", "forecast_reference_time", "newtime"])
+    folded = folded.assign_coords(
+        time=("newtime", frt + fp),
+        forecast_period=("newtime", fp),
+        forecast_reference_time=("newtime", frt),
+    ).swap_dims({"newtime": "time"})
+
+    rest = ds.drop_vars(names).drop_dims(["forecast_period", "forecast_reference_time"])
+    return xr.merge([rest, folded], join="inner", compat="override")
+
+
+def _collapse_redundant_coord_dims(ds):
+    """
+    Reduce one-axis coordinates that iris left broadcast over a second dimension.
+
+    ``level_height``/``sigma`` describe the vertical grid, ``forecast_period``/
+    ``forecast_reference_time`` the time axis. When one source file in a month is
+    inconsistent, iris cannot merge these into a single coordinate and leaves them
+    2-D. Seen for 2012-03-15 03:00, where the hybrid-height coefficients are
+    rounded differently in the last float32 bit (7700.039 vs 7700.040), which also
+    leaves the forecast coordinates broadcast across level.
+
+    Takes the first slice along the surplus dimension, warning with the size of the
+    discrepancy discarded so a genuine mid-month change cannot pass unnoticed.
+    """
+    for name, extra_dim in _ONE_AXIS_COORDS.items():
+        if name in ds.variables and extra_dim in ds[name].dims:
+            first = ds[name].isel({extra_dim: 0}, drop=True)
+            spread = np.abs(ds[name] - first).max().values
+            log(f"WARNING: {name} varies along {extra_dim} (max deviation {spread}); "
+                f"collapsing to the first {extra_dim} slice")
+            ds[name] = first
+    return ds
+
+
+def _normalize_region_shape(ds):
+    """
+    Force a region's dataset into the canonical shape before it is written.
+
+    A month whose source files are internally inconsistent comes out of the merge
+    with variables off the time axis, or coordinates carrying a dimension they
+    should not (see the two helpers above). Either way the intermediate is written
+    malformed and nothing notices until the monthly dataset is appended to a yearly
+    store built from well-formed months. Reform here, at the one boundary where the
+    intermediate is created, so everything downstream can assume the shape.
+    """
+    return _collapse_redundant_coord_dims(_fold_forecast_grid_onto_time(ds))
+
+
 def log(msg):
     """Print a timestamped message."""
     print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -433,7 +513,7 @@ def extract_region(
             all_variables = xr.concat([east, west], dim="longitude")
             log(f"region {region_id} crosses dateline; concatenated east/west slices")
 
-        result = all_variables.sortby("time")
+        result = _normalize_region_shape(all_variables).sortby("time")
         log(f"region {region_id} extracted; dims {dict(result.sizes)}")
 
         if not save:
