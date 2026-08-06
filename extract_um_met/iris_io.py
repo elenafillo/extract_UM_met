@@ -79,7 +79,10 @@ def get_Mk(year, month):
         raise ValueError(f"No Mk version found for year={year}, month={month_str}")
 
 
-_KNOWN_BAD_FILES = {"MO201402011500.UMG_Mk7_I_L59PT9.pp"}
+# Basenames skipped at load time. Empty: no file in the archive currently needs
+# it. The 2014-02-01 15:00 dump used to be listed here, but the pipeline absorbs
+# its odd data time (see How_Tos/known_problems.md), so it loads like any other.
+_KNOWN_BAD_FILES = set()
 
 
 def _decompress_workers():
@@ -203,7 +206,7 @@ def load_iris(filepath, Mk, date, vars, num, homefolder):
     Exception
         If loading fails, raises and removes temporary files.
     """
-    bad_files = ["MO201402011500.UMG_Mk7_I_L59PT9.pp"]
+    bad_files = []   # basenames to skip; see _KNOWN_BAD_FILES
 
     # If filepath is a string, load directly
     if isinstance(filepath, str):
