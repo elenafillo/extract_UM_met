@@ -36,7 +36,7 @@ come from; the message quoted is the one the tool actually prints.
 | `No archive files matched: {pattern}` / `No files matched: {pattern}` | Usually `data_types.<type>.archive_directory` is wrong or unset. Check the printed pattern against what is actually on disk — it tells you the Mk folder and filename the tool expected. |
 | `No Mk version found for year=…, month=…` | The date is outside the known Mk calendar: before 2011-01, or **past the newest block**, which happens when the archive gains a new Mk. Extend `iris_io.get_Mk` and `cli.MK_SAMPLE_TIMESTEPS` — see [concepts.md §2](concepts.md#2-the-global-um-archive-um_global). |
 | `File not found: {filepath}` | A single expected file is absent. Known-bad files are skipped on load; a hard failure here means the archive is incomplete for that timestep. |
-| `UM1p5km Mk calendar for YYYY-MM is not yet defined` | Only Mk4 (2017-07 onward) is confirmed for the 1.5 km UK source. Earlier boundaries are unknown — see the [roadmap](roadmap.md). |
+| `UM1p5km Mk calendar for YYYY-MM is not yet defined` | Only Mk4 (2017-07 onward) is confirmed for the 1.5 km UK source. Earlier boundaries are unknown — see the [roadmap](roadmap_and_contributing.md). |
 | `uk16 region bounds are not generated yet` | `UM1p5km` is registered but not runnable: its 16 rotated-pole tiles have no saved true-lat/lon bounds yet. |
 
 ### Cube selection
@@ -108,7 +108,7 @@ level flag has to be right; see [reference.md §3](reference.md#3-raw-um-variabl
 ## 7. Output that looks wrong
 
 These are known limitations rather than crashes — they produce data, just not the
-data you might expect. All are tracked in the [roadmap](roadmap.md).
+data you might expect. All are tracked in the [roadmap](roadmap_and_contributing.md).
 
 - **A `native`-mode domain is bigger than its bounds.** `lat_bounds`/`lon_bounds`
   in a `native` grid block currently shape only the canonical target grid;

@@ -42,7 +42,7 @@ archive paths, grid specs — lives in `config.example.yaml`.
 | [Reference](https://elenafillo.github.io/extract_UM_met/reference.html) | Variables, model levels, output chunking, raw UM inventory |
 | [Troubleshooting](https://elenafillo.github.io/extract_UM_met/troubleshooting.html) | Symptoms, causes and fixes |
 | [Codebase](https://elenafillo.github.io/extract_UM_met/codebase.html) | Module map and pipeline flow |
-| [Roadmap](https://elenafillo.github.io/extract_UM_met/roadmap.html) | Status, remaining work, open questions |
+| [Roadmap and contributing](https://elenafillo.github.io/extract_UM_met/roadmap_and_contributing.html) | Remaining work, open questions, how to open an issue, credits |
 
 The pages are written in [`How_Tos/`](How_Tos/) and rendered by the Sphinx config
 in [`docs/`](docs/) — edit the sources in `How_Tos/`, never `docs/`.

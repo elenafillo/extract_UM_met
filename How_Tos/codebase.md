@@ -222,5 +222,6 @@ Variations handled in `cli.py`:
   {src}`extract_region.sbatch <scripts/extract_region.sbatch>` and
   {src}`join_year.sbatch <scripts/join_year.sbatch>`.
 
-Open questions and planned work are tracked in [roadmap.md](roadmap.md).
+Open questions and planned work are tracked in
+[roadmap_and_contributing.md](roadmap_and_contributing.md).
 </content>

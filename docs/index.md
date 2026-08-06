@@ -77,6 +77,13 @@ Variables, model levels, output format and chunking, raw UM inventory.
 Error messages, what causes them, and what to do about each.
 :::
 
+:::{grid-item-card} Known problems
+:link: known_problems
+:link-type: doc
+
+Silent defects, file quirks, and whether the store you already have is affected.
+:::
+
 :::{grid-item-card} Codebase
 :link: codebase
 :link-type: doc
@@ -84,11 +91,12 @@ Error messages, what causes them, and what to do about each.
 Module map — what each module does and how the pipeline flows.
 :::
 
-:::{grid-item-card} Roadmap
-:link: roadmap
+:::{grid-item-card} Roadmap and contributing
+:link: roadmap_and_contributing
 :link-type: doc
 
-Status, remaining work, and the open questions behind current behaviour.
+Remaining work, the open questions behind current behaviour, how to open an
+issue, and who wrote this.
 :::
 
 ::::
@@ -106,6 +114,7 @@ Status, remaining work, and the open questions behind current behaviour.
 | Find out what is in a store I already have | [Reference §1](reference.md#1-what-a-store-contains) |
 | Submit a big run to SLURM | [Extracting §7](extracting.md#7-run-under-slurm) |
 | Work out why a run failed | [Troubleshooting](troubleshooting.md) |
+| Report a bug or request a feature | [Roadmap and contributing](roadmap_and_contributing.md) |
 | Add a data type or grid mode | [Codebase §4](codebase.md#4-where-to-change-things) |
 
 ```{toctree}
@@ -117,6 +126,7 @@ extracting
 concepts
 reference
 troubleshooting
+known_problems
 codebase
-roadmap
+roadmap_and_contributing
 ```

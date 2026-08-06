@@ -184,7 +184,7 @@ through untouched, off-Mk months are interpolated onto it.
 > currently shape only the canonical target grid — extraction still passes each
 > region through at its full region extent (sliced to region bounds only), so a
 > native domain is not yet cropped to a tight bounding box. Footprint/regular
-> modes are unaffected. (Known limitation; tracked in the [roadmap](roadmap.md).)
+> modes are unaffected. (Known limitation; tracked in the [roadmap](roadmap_and_contributing.md).)
 
 ### Grid spec examples (config)
 
