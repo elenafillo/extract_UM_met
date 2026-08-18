@@ -81,6 +81,32 @@ data_types:
     # New Zealand convective-scale model archive (single file per timestep).
     archive_directory: ""    # TODO: set once the NZCSM archive exists
 
+# Static ancillary fields (`extract-topog`), keyed by data type. These are
+# extracted once per domain-year, onto the same target grid as the met, and
+# written to {ancillary_save_directory}/{domain}/{domain}_topog_{year}.nc
+#
+# The UM Global orography changes between Mk blocks — five distinct fields cover
+# Mk6-Mk11, and two blocks sharing a grid does NOT mean they share a field, so
+# each Mk names its own ancillary directory. Sources with one field for all time
+# (NZCSM) use `native_topog_file` instead. See How_Tos/orography.md.
+ancillary_types:
+  UM_Global:
+    native_topog_directory: "/gws/ssde/j25a/name/data/UMAncils/Global"
+    topog_by_mk:
+      6:  UMG_Mk7_ps33     # Mk6 and Mk7 genuinely share one field
+      7:  UMG_Mk7_ps33
+      8:  UMG_Mk8_ps35
+      9:  UMG_Mk9_ps38
+      10: UMG_Mk10_ps41
+      11: UMG_Mk11_ps45
+      12: UMG_Mk11_ps45    # no Mk12 ancillary published yet; known approximation
+  NZCSM:
+    native_topog_file: ""    # TODO: set once the NZCSM topography file is placed
+
+# Where extract-topog writes its output. Defaults to zarr_save_directory, so the
+# orography lands beside the yearly met store it belongs with.
+# ancillary_save_directory: "/gws/ssde/j25b/acrg/{user}/satellite_met_zarr/"
+
 # Default edge size for latitude and longitude if not specified per domain
 default_edge_size: [100, 100]
 
@@ -99,6 +125,18 @@ default_edge_size: [100, 100]
 # identical either way. Big domains, many model levels, and fine target grids all
 # push in the same direction.
 domains:
+  # Whole-globe orography at the UM's own resolution: no target grid, no
+  # interpolation, no world regions. `extract-topog` only — the met pipeline has
+  # no use for a global domain, and `run`/`extract` reject grid mode 'global'.
+  # One file per year serves every native-mode consumer, which subsets its own
+  # box out of it; footprint/regular domains still need their own file, because
+  # their target grid is an interpolated mesh off the UM native ladder.
+  GLOBAL:
+    domain_name: "GLOBAL"
+    data_type: "UM_Global"
+    grid:
+      mode: global
+
   SA:
     domain_name: "SOUTHAMERICA"
     footprint: "GOSAT-BRAZIL-column_SOUTHAMERICA_201801.nc"

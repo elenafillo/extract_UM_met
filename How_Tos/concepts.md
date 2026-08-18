@@ -54,8 +54,8 @@ period at a given native resolution:
 | Mk8 | Jul 2014 – Jul 2015 | 0.15625° × 0.234375° | 1152 × 1536 |
 | Mk9 | Aug 2015 – Jun 2017 | 0.15625° × 0.234375° | 1152 × 1536 |
 | Mk10 | Jul 2017 – May 2022 | 0.09375° × 0.140625° | 1920 × 2560 |
-| Mk11 | Jun 2022 – Jan 2026 | 0.09375° × 0.140625° | 1920 × 2560 |
-| Mk12 | Feb 2026 – | 0.09375° × 0.140625° | 1920 × 2560 |
+| Mk11 | Jun 2022 – Dec 2025 | 0.09375° × 0.140625° | 1920 × 2560 |
+| Mk12 | Jan 2026 – | 0.09375° × 0.140625° | 1920 × 2560 |
 
 **Availability:** Mk6–Mk12 (2011-01 onward) are all extractable. Every grid size
 above is what `make-native-grid` actually stitches from the 14 region files, not
@@ -70,6 +70,11 @@ Mk blocks overlap slightly in the archive (e.g. `UMG_Mk11PT/` starts at 2022-04 
 Mk10 runs to 2022-05, and `UMG_Mk12PT/` starts at 2025-12 while Mk11 runs to
 2026-01). The boundaries in the table are the ones used in the code via `get_Mk`:
 the switch happens the month after the previous block's last full month.
+
+Where an overlap spans a year end, the switch is placed at the year boundary so
+a whole extraction year sits in one block. Mk11 and Mk12 both cover 2025-12 in
+full, so Mk11 ends there and Mk12 takes 2026-01 onward — Mk11's own 2026-01 is
+only two-thirds written (4,704 files against Mk12's 6,944) and must not be used.
 
 You **never set the Mk yourself** — give a `--date` and the block is resolved in
 code (`iris_io.get_Mk`).
