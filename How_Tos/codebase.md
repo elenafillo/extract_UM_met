@@ -26,6 +26,7 @@ extract_UM_met/                    # ← the repo
 │   ├── rotated.py              # rotated-pole regridding + wind rotation (UM1p5km, NZCSM)
 │   ├── extract.py              # per-region + single-file extraction
 │   ├── join.py                 # stitch regions → domain dataset for one period
+│   ├── topog.py                # static orography ancillary (`extract-topog`)
 │   ├── metadata.py             # CF / provenance attributes
 │   └── zarr_io.py              # append to yearly zarr store + finalize attrs
 │
@@ -55,10 +56,10 @@ workflow is `python -m extract_um_met`.
 - {src}`__main__.py <extract_um_met/__main__.py>` — makes
   `python -m extract_um_met …` work; just calls `cli.main()`.
 - {src}`cli.py <extract_um_met/cli.py>` — the command layer. Defines the `run`,
-  `extract` and `make-native-grid` subcommands (argparse), parses `--date` into
-  year/month/day periods, and orchestrates the workflow: resume logic (which
-  days are already in a store, via `_read_present_days`), the single-day debug
-  path (`_run_single_day`), and the non-tiled single-file path
+  `extract`, `make-native-grid` and `extract-topog` subcommands (argparse),
+  parses `--date` into year/month/day periods, and orchestrates the workflow:
+  resume logic (which days are already in a store, via `_read_present_days`), the
+  single-day debug path (`_run_single_day`), and the non-tiled single-file path
   (`_run_non_tiled`). It is the only module that stitches the others together.
 - {src}`config.py <extract_um_met/config.py>` — `load_config()` reads
   `config.yaml` from the CWD and fills `user` from `$USER`;
@@ -135,6 +136,14 @@ workflow is `python -m extract_um_met`.
   the `lat`/`lon`/`levels` schema; stamp CF + delta metadata. Returns the
   period's domain `xr.Dataset`. `cleanup_region_intermediates()` deletes the
   scratch stores afterwards.
+- {src}`topog.py <extract_um_met/topog.py>` — the `extract-topog` product, the one
+  output that is not a met store. `extract_topog()` picks the Mk's
+  `surface_altitude` ancillary (`_resolve_topog_file`), normalises longitude to
+  −180…180, then lands it on the same target grid the met run builds for that
+  domain — interpolated in footprint/regular mode, subset with an explicit
+  tolerance in native mode — so the two match cell for cell. `mode: global` skips
+  the target grid entirely and writes the whole native globe. Output is
+  `{domain}_topog_{year}.nc`; see [topography.md](topography.md).
 - {src}`metadata.py <extract_um_met/metadata.py>` — `apply_cf_metadata()` writes
   the CF coordinate attrs and the global attrs
   (Conventions/title/institution/source/… from the config `metadata:` block,
@@ -224,4 +233,3 @@ Variations handled in `cli.py`:
 
 Open questions and planned work are tracked in
 [roadmap_and_contributing.md](roadmap_and_contributing.md).
-</content>

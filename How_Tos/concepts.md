@@ -155,7 +155,9 @@ Existing domains in the config and their regions:
 | `NA` | NORTHAFRICA | 2, 3, 6, 7 | footprint |
 | `CHINA` | CHINA | 3, 4, 7, 8 | footprint |
 | `INDIA` | INDIA | 3, 7 | footprint |
+| `EUROPE` | EUROPE | 2, 5, 6, 9 | native |
 | `NZ` | NEWZEALAND | — (NZCSM, non-tiled) | regular |
+| `GLOBAL` | GLOBAL | — (whole globe) | global — `extract-topog` only |
 
 Adding your own domain is config-only, no code — see
 [extracting.md](extracting.md#6-add-a-new-domain).
@@ -172,6 +174,7 @@ Every domain is extracted onto a **target grid** chosen by its `grid.mode`
 | **`footprint`** (default) | a reference footprint's lat/lon, padded outward by edge cells | yes | `footprint:` file + `edge_size_lat/lon` |
 | **`regular`** | `np.arange` mesh from bounds + step | yes | `lat_bounds`, `lon_bounds`, `dlat`, `dlon` |
 | **`native`** | the saved native UM grid (subset to bounds) | **no** (passthrough on matching Mk) | pre-built native grids in `data/` |
+| **`global`** | the whole UM native globe, unclipped | **no** | nothing — `extract-topog` only; `run` and `extract` reject it ([topography.md](topography.md)) |
 
 If a domain has no `grid:` block, it defaults to **footprint** with the domain's
 `footprint` key and `default_edge_size`.

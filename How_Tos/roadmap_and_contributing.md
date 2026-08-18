@@ -16,22 +16,16 @@ configure and run the tool see [setup.md](setup.md) and
   Generalise `make-native-grid` to derive and save their true-lat/lon bounds
   under `data/UM1p5km/`, then wire the join. Confirm the Mk2/Mk3 date boundaries
   (only Mk4 from 2017-07 is currently confirmed).
-- **NZCSM — merge [PR #5](https://github.com/elenafillo/extract_UM_met/pull/5)
-  first.** Kirstin Gerrand's `add_topog` branch carries most of the outstanding
-  New Zealand work:
+- **NZCSM — the rest of [PR #5](https://github.com/elenafillo/extract_UM_met/pull/5).**
+  `extract-topog` has landed for UM Global ([topography.md](topography.md)); two
+  things from Kirstin Gerrand's `add_topog` branch have not:
   - two NZCSM extraction fixes — `_build_time_axis` broadcasts a scalar (or
     otherwise non-time-dimensioned) `forecast_period` / `forecast_reference_time`
     onto the time dimension instead of assuming both stack, and the non-tiled run
     path skips a day with no archive files rather than failing the whole year;
-  - `extract-topog`, a static ancillary field: a native-grid (rotated-pole)
-    topography `.pp` regridded through `rotated.py` onto the *same* target grid
-    met extraction builds for the domain, so the two line up pixel for pixel.
-    Output is `{ancillary_save_directory}/{domain}/{domain}_topog.nc`,
-    configured by a new `ancillary_types:` block keyed by data type.
-
-  It branched before the package rename (`met_extract` → `extract_um_met`) and
-  the docs restructure, so it needs porting onto both rather than a straight
-  merge.
+  - the **rotated-pole topography path is unexercised** — NZCSM's
+    `native_topog_file` is still `""`, and PR #5's regrid call was ported to the
+    current `rotated.py` API without ever being run.
 - **NZCSM, after that PR:** point `data_types.NZCSM.archive_directory` at the
   real archive once it exists (samples currently under `pp_data/`). Add the
   deferred stress fields (`surface_downward_*_stress`) — they are rotated-grid
@@ -82,6 +76,10 @@ configure and run the tool see [setup.md](setup.md) and
   should arguably default to the coarsest grid in the year instead; and if
   adjacent Mk native grids turn out to be nested, those months could use `.sel()`
   rather than interpolation.
+- **Mk12 has no published orography.** `UMG_Mk11_ps45` is used for Mk12 as a
+  knowing approximation: the two grids are identical but the fields are not, so a
+  small number of high-relief cells are wrong. Revisit when a `UMG_Mk12*`
+  directory appears. Evidence in `How_Tos/topography_validation.md`.
 - **Zarr format** is `zarr_format=2` by default, readable by both zarr 2.18.7 and
   3.x. Switch to `3` only once all consumers are on zarr 3.x.
 - **Variable selection** excludes the 1.5 m `air_temperature`, for exact parity
@@ -111,6 +109,6 @@ went wrong.
 
 ## Credits
 
-`extract_um_met` is written by Elena Fillola using Claude Opus 5 and by Jeff Clark, as
+`extract_um_met` is written by Elena Fillola using Claude Opus 5 and by Jeff Clark, with contributions from Kirstin Gerrand, as
 part of research at the [Atmospheric Chemistry Research Group](https://www.bristol.ac.uk/chemistry/research/acrg/)
 at the University of Bristol.

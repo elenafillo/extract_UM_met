@@ -160,14 +160,9 @@ Before your first `native`-mode run — and safe to run any time — build them:
 python -m extract_um_met make-native-grid
 ```
 
-This writes `data/native_grid_Mk{6..12}_*.nc` plus `_info.yaml` metadata. Each Mk
-is read from one known sample timestep (`cli.MK_SAMPLE_TIMESTEPS`) — the grid is
-fixed within an Mk block, so the choice does not matter, and naming it avoids
-listing the Mk10–12 folders, which hold hundreds of thousands of files. See
+This writes `data/native_grid_Mk{6..12}_*.nc` plus `_info.yaml` metadata, reading
+each Mk from one known sample timestep. See
 [concepts.md](concepts.md#5-native-grids-data).
-
-Gzipped Mk6–9 files are decompressed into `scratch_path` from `config.yaml`, not
-`/tmp` — JASMIN's `/tmp` is a 2 GB tmpfs and is routinely full.
 
 ---
 
@@ -199,5 +194,3 @@ good. Move on to [extracting.md](extracting.md) for real runs.
 - [ ] `cp config.example.yaml config.yaml` and edit paths + `met_extract_author`
 - [ ] `python -m extract_um_met make-native-grid`
 - [ ] `python -m extract_um_met run --domain SA --date 20160115` (smoke test)
-</content>
-</invoke>

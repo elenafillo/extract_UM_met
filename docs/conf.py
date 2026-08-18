@@ -44,6 +44,7 @@ html_theme_options = {
         {"title": "Extracting", "url": "extracting"},
         {"title": "Concepts", "url": "concepts"},
         {"title": "Reference", "url": "reference"},
+        {"title": "Topography", "url": "topography"},
         {"title": "Troubleshooting", "url": "troubleshooting"},
         {"title": "Codebase", "url": "codebase"},
     ],

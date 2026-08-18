@@ -64,14 +64,15 @@ are omitted rather than written blank:
 
 `Conventions` · `title` · `institution` · `source` · `references` · `history` ·
 `comment` · `author` · `grid_mode` · `mk_version` · `data_type` ·
-`delta_lat` / `delta_lon` (mean grid spacing)
+`delta_lat` / `delta_lon` (mean grid spacing) · `max_level_m` (only if the domain
+sets a ceiling, see [§2](#capping-by-height-max_level_m))
 
 Provenance and completeness attributes, written by `zarr_io.finalize_attrs`
 after each year:
 
 `created_by` · `created_at` · `time_start` · `time_end` ·
-`n_time` / `n_lat` / `n_lon` / `n_levels` · `zarr_chunks` · `months_present` ·
-`n_months_present` · `missing_months` · `year_complete`
+`n_time` / `n_lat` / `n_lon` / `n_levels` · `zarr_chunks` · `zarr_compression` ·
+`months_present` · `n_months_present` · `missing_months` · `year_complete`
 
 `year_complete` and `missing_months` are the quickest check that a year finished:
 

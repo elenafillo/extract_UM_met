@@ -65,6 +65,8 @@ the config asks for; reaching further north needs regions 2 and 5 added to
 prints a banner naming the regions that would keep the rest, so the grid a run
 reports is the grid it writes.
 
+---
+
 ## 2. File quirks
 
 Oddities in the files, rather than in this code. They are worth knowing
@@ -102,7 +104,9 @@ carries the same `t2`.
 
 The pipeline already absorbs this. `_restamp_to_interval_end` moves a bounded
 time point to its interval end, which here is exactly 15:00, putting the averaged
-fields back on the shared axis. 
+fields back on the shared axis.
+
+---
 
 ## 3. Environment quirks
 
@@ -153,5 +157,3 @@ if ! head -c 1 "$PROBE" >/dev/null 2>&1; then
     exit 1
 fi
 ```
-
----

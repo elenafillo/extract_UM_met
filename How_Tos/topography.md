@@ -60,7 +60,8 @@ geopotential_at_surface = g * orog                            # (lat, lon)
 ```
 
 with `g = 9.80665`. All three inputs are static, so the geopotential is too — no
-time dimension. Note that the geopotential is **not written** by `extract-topog`.
+time dimension. `extract-topog` writes the orography only, never the geopotential.
+
 ---
 
 ## 3. Configuration

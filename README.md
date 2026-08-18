@@ -12,10 +12,11 @@ python -m extract_um_met run --domain SA --date 2016
 
 ## Accessing the data
 
-The raw archive is available via JASMIN ([link your CEDA and JASMIN accounts
-first](https://help.ceda.ac.uk/article/5105-linking-your-jasmin-account)), or to
-[download directly from CEDA](https://data.ceda.ac.uk/badc/name_nwp/data/global)
-for 2015–2024 only. Running this tool on JASMIN reaches the full record.
+The raw archive lives on [JASMIN](https://www.jasmin.ac.uk/). With access to the
+NAME workspace you can reach the full record, from 2011 onwards. Otherwise you
+can reach 2015–2024 only, by [linking your CEDA and JASMIN
+accounts](https://help.ceda.ac.uk/article/5105-linking-your-jasmin-account) or by
+[downloading directly from CEDA](https://data.ceda.ac.uk/badc/name_nwp/data/global).
 
 ## Quick start (on JASMIN)
 
@@ -40,7 +41,9 @@ archive paths, grid specs — lives in `config.example.yaml`.
 | [Extracting](https://elenafillo.github.io/extract_UM_met/extracting.html) | The CLI: `run` / `extract` / `make-native-grid`, resume, SLURM, adding a domain |
 | [Concepts](https://elenafillo.github.io/extract_UM_met/concepts.html) | Data types, Mk blocks, world regions, grid modes |
 | [Reference](https://elenafillo.github.io/extract_UM_met/reference.html) | Variables, model levels, output chunking, raw UM inventory |
+| [Topography](https://elenafillo.github.io/extract_UM_met/topography.html) | The orography ancillary: `extract-topog`, and deriving geopotential |
 | [Troubleshooting](https://elenafillo.github.io/extract_UM_met/troubleshooting.html) | Symptoms, causes and fixes |
+| [Known problems](https://elenafillo.github.io/extract_UM_met/known_problems.html) | Silent defects and file quirks, and whether your store is affected |
 | [Codebase](https://elenafillo.github.io/extract_UM_met/codebase.html) | Module map and pipeline flow |
 | [Roadmap and contributing](https://elenafillo.github.io/extract_UM_met/roadmap_and_contributing.html) | Remaining work, open questions, how to open an issue, credits |
 

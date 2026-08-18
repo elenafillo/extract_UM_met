@@ -64,6 +64,8 @@ level flag has to be right; see [reference.md §3](reference.md#3-raw-um-variabl
 | `Footprint file not found: {path}` | Check `reference_footprints_directory` in config and the domain's `footprint:` filename. |
 | `Footprint mode requires a 'footprint' key in the domain config` | A domain with no `grid:` block defaults to footprint mode, so it still needs a `footprint:`. Give it one, or set an explicit `grid.mode`. |
 | `Cube does not have latitude/longitude coordinates` | The loaded cube is not on a recognisable lat/lon grid — usually a rotated-pole source reaching the regular-grid path. |
+| `Unknown grid mode: global` | `mode: global` is `extract-topog` only; `run` and `extract` have no whole-globe path. Use `extract-topog --domain GLOBAL` — see [topography.md](topography.md). |
+| `No ancillary_types.X.topog_by_mk entry for Mk N` | `extract-topog` on a year whose Mk has no ancillary mapped. Add the Mk to `topog_by_mk` — see [topography.md §4](topography.md#4-which-ancillary-each-mk-uses). |
 
 ---
 

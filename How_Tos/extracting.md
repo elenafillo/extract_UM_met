@@ -1,6 +1,6 @@
 # How To: Extract Meteorology (the command line)
 
-How to drive the `extract_um_met` CLI: the three subcommands, their options, the
+How to drive the `extract_um_met` CLI: the subcommands, their options, the
 extract → join → append workflow, resume behaviour, adding a domain, and running
 under SLURM.
 
@@ -17,7 +17,7 @@ export TMPDIR=/work/scratch-pw5/$USER/tmp && mkdir -p "$TMPDIR"
 
 ---
 
-## 1. The three subcommands
+## 1. The subcommands
 
 ```
 python -m extract_um_met <command> [options]
@@ -28,6 +28,7 @@ python -m extract_um_met <command> [options]
 | **`run`** | extract → join → append to yearly zarr store (with resume) | the main workflow — producing data |
 | **`extract`** | write per-region zarr intermediates only | debugging / retrying a flaky region |
 | **`make-native-grid`** | save native UM grids to `data/` | one-off setup; before `native` mode |
+| **`extract-topog`** | write the static orography ancillary for a domain-year | pairing topography with a store — see [topography.md](topography.md) |
 
 Run any command with `-h` to see its options, e.g. `python -m extract_um_met run -h`.
 
@@ -152,9 +153,6 @@ python -m extract_um_met make-native-grid --output-dir /custom/path/
 | `--mk` | Mk version (6–12); omit for all available |
 | `--output-dir` | override `config.native_grid_directory` |
 | `--dry-run` | report what it would extract; write nothing |
-
-Each Mk is read from a fixed sample timestep (`cli.MK_SAMPLE_TIMESTEPS`); the
-grid does not vary within an Mk block, so there is nothing to choose.
 
 ---
 
@@ -318,14 +316,7 @@ coverage before or after a run, there is a `check_met_files.py` helper.
 
 ## 9. When something goes wrong
 
-Start with `--dry-run` to separate configuration problems from data problems,
-then a single-day run as the cheapest real test:
-
-```bash
-python -m extract_um_met run --domain SA --date 201601 --dry-run
-python -m extract_um_met run --domain SA --date 20160115
-```
-
-Error messages, causes and fixes are collected in
-[troubleshooting.md](troubleshooting.md).
-</content>
+`--dry-run` separates configuration problems from data problems, and a single-day
+run is the cheapest real test (both shown in §2). Error messages, causes and
+fixes are collected in [troubleshooting.md](troubleshooting.md); silent defects
+and file quirks are in [known_problems.md](known_problems.md).
