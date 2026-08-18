@@ -71,9 +71,9 @@ def get_Mk(year, month):
         return 9
     elif (year == 2017 and month in range(7, 13)) or (2017 < year < 2022) or (year == 2022 and month in range(1, 6)):
         return 10
-    elif (year == 2022 and month in range(6, 13)) or (2022 < year < 2026) or (year == 2026 and month == 1):
+    elif (year == 2022 and month in range(6, 13)) or (2022 < year < 2026):
         return 11
-    elif (year == 2026 and month in range(2, 13)) or year > 2026:
+    elif year >= 2026:
         return 12
     else:
         raise ValueError(f"No Mk version found for year={year}, month={month_str}")
