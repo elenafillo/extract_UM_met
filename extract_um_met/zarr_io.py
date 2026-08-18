@@ -189,6 +189,31 @@ def _build_encoding(ds, zarr_format, compression_level):
     return encoding
 
 
+def _check_store_levels(ds, store_path):
+    """
+    Confirm an incoming period's levels match the store it is being appended to.
+
+    A height ceiling (``max_level_m``) resolves against the Mk's ``level_height``
+    ladder, so a mid-year Mk change whose ladder moved resolves to a different
+    level set. Appending that would mix two vertical grids in one store; raise
+    here, naming both selections, rather than let zarr fail on a shape mismatch
+    far from the cause.
+    """
+    if "levels" not in ds.dims:
+        return
+    with xr.open_zarr(store_path, consolidated=True) as existing:
+        store_levels = [int(v) for v in existing["levels"].values]
+    levels = [int(v) for v in ds["levels"].values]
+    if levels != store_levels:
+        raise ValueError(
+            f"cannot append: this period has {len(levels)} model levels "
+            f"(top {levels[-1]}) but {store_path} holds {len(store_levels)} "
+            f"(top {store_levels[-1]}). The level selection changed mid-store — "
+            f"with max_level_m set, an Mk boundary whose level_height ladder moved "
+            f"does this. Rebuild the year with --overwrite."
+        )
+
+
 def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
                                chunks=None, compression_level=None):
     """
@@ -227,6 +252,7 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
                                    compression_level or _COMPRESSION_LEVEL)
         _to_zarr(ds, store_path, mode="w", zarr_format=zarr_format, encoding=encoding)
     else:
+        _check_store_levels(ds, store_path)
         _to_zarr(ds, store_path, append_dim="time")
 
     return str(store_path)

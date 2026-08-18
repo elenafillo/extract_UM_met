@@ -107,6 +107,26 @@ def resolve_config_value(value, config):
         return value
 
 
+def resolve_max_level_m(domain_cfg):
+    """
+    A domain's model-level height ceiling in metres, or None if it has none.
+
+    Per domain rather than under ``data_types:``, because that block is shared by
+    every domain reading the same archive and a ceiling is a property of what the
+    domain is for. It composes with the source's own level selection
+    (``level_stride`` / ``model_levels``), which is applied first.
+    """
+    ceiling = domain_cfg.get("max_level_m")
+    if ceiling is None:
+        return None
+    ceiling = float(ceiling)
+    if ceiling <= 0:
+        raise ValueError(
+            f"domain max_level_m must be a positive height in metres, got {ceiling:g}"
+        )
+    return ceiling
+
+
 class Config:
     """
     Light accessor for configuration values.

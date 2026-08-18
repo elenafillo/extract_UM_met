@@ -152,10 +152,15 @@ domains:
     domain_name: "EUROPE"
     world_regions_codes: [2, 5, 6, 9]
     intermediate_period: week
+    # Height ceiling in metres: drops model levels above it, keeping one
+    # bracketing level so a consumer can still interpolate up to the ceiling
+    # itself. Per domain, and composes with the source's level_stride /
+    # model_levels. On the L59 global ladder, 12000 keeps 42 levels.
+    # max_level_m: 12000
     grid:
       mode: native
-      lat_bounds: [-100.0, 40.0]
-      lon_bounds: [10.0, 79.5]
+      lat_bounds: [10.0, 79.5]
+      lon_bounds: [-98.0, 39.0]
       native_grid: majority  # or "latest", "Mk10", etc.
     # Tuned for a small-bbox reader (one timestep, a spatial box, then subset
     # levels): a whole column in one chunk, tiled 96 x 96 in space, so a box read

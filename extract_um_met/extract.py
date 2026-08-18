@@ -20,7 +20,7 @@ import numpy as np
 import xarray as xr
 import dask
 
-from .config import Config, resolve_config_value, store_stem
+from .config import Config, resolve_config_value, resolve_max_level_m, store_stem
 from .iris_io import load_files, delete_iris
 from .grid import build_target_grid
 from .periods import month_days, period_tag
@@ -69,6 +69,50 @@ def _pick(cubes, name, want_levels):
             f"found {len(matches)}. Loaded cubes (name, has_levels): {available}"
         )
     return matches[0]
+
+
+def _theta_ladder_cube(cube, source):
+    """
+    The first leveled mass cube — the theta ladder a height ceiling resolves against.
+
+    Must be a mass field: u/v sit on rho levels, which are the midpoints between
+    the theta levels, so the same ceiling resolved against a wind cube selects a
+    different set of level numbers.
+    """
+    name = next((n for n, want_levels in source.mass_vars if want_levels), None)
+    if name is None:
+        raise ValueError(
+            f"max_level_m needs a model-level mass field to read level_height from, "
+            f"but no mass_vars entry for source {source.name!r} carries model levels "
+            f"(mass_vars={source.mass_vars})."
+        )
+    return _pick(cube, name, True)
+
+
+def _apply_max_level(levels, mass_cube, max_level_m):
+    """
+    Drop levels above ``max_level_m``, keeping the first selected level above it.
+
+    That bracketing level is deliberate: a consumer interpolating onto a ceiling
+    of exactly ``max_level_m`` (GLIDE's ``alt_max_m``) then has a level above to
+    interpolate to instead of extrapolating off the top of the store. The store's
+    top level therefore sits just *above* its stated ceiling.
+
+    Applied to the already-resolved selection, so the bracketing level is the next
+    level the store would have held, not the next model level in the archive.
+    """
+    heights = dict(zip(
+        mass_cube.coord("model_level_number").points,
+        mass_cube.coord("level_height").points,
+    ))
+    below = [lvl for lvl in levels if heights[lvl] <= max_level_m]
+    above = [lvl for lvl in levels if heights[lvl] > max_level_m]
+    if not below:
+        raise ValueError(
+            f"max_level_m={max_level_m:g} is below the lowest selected model level "
+            f"(level {levels[0]} at {heights[levels[0]]:g} m); nothing would be extracted."
+        )
+    return below + above[:1]
 
 
 def _averaging_attrs(time_coord):
@@ -414,6 +458,7 @@ def extract_region(
 
     mk = source.get_mk(year, month_int)
     levels = source.levels()
+    max_level_m = resolve_max_level_m(domain_cfg)
 
     # Resolve the target grid if not provided.
     if target is None:
@@ -450,6 +495,13 @@ def extract_region(
         ]
         cube = load_files(files, source.load_vars(), scratch_root + os.sep)
         log(f"region {region_id} loaded in {(datetime.datetime.now() - t0).total_seconds():.1f}s")
+
+        # The ceiling needs the Mk's level_height ladder, so it can only resolve
+        # once a cube is loaded — and before the level selection is used below.
+        if max_level_m is not None:
+            levels = _apply_max_level(levels, _theta_ladder_cube(cube, source), max_level_m)
+            log(f"max_level_m={max_level_m:g}: keeping {len(levels)} levels "
+                f"(top level {levels[-1]}, which brackets the ceiling)")
 
         # --- Instantaneous group: mass-grid variables + staggered winds -------
         # Cubes are selected by name + level presence (see _pick) so a changed
@@ -674,6 +726,7 @@ def extract_single(
         pass
 
     levels = source.levels()
+    max_level_m = resolve_max_level_m(domain_cfg)
     if target is None:
         target_lat, target_lon, _ = build_target_grid(domain_cfg, cfg)
     else:
@@ -688,6 +741,13 @@ def extract_single(
         files = source.list_files(date)   # region=None (non-tiled)
         cube = load_files(files, source.load_vars(), scratch_root + os.sep)
         log(f"loaded {len(files)} file(s) in {(datetime.datetime.now() - t0).total_seconds():.1f}s")
+
+        # As in extract_region: the ceiling resolves against the loaded ladder,
+        # before `levels` is used by _sub below.
+        if max_level_m is not None:
+            levels = _apply_max_level(levels, _theta_ladder_cube(cube, source), max_level_m)
+            log(f"max_level_m={max_level_m:g}: keeping {len(levels)} levels "
+                f"(top level {levels[-1]}, which brackets the ceiling)")
 
         target_cube = latlon_target_cube(target_lat, target_lon)
 
@@ -770,6 +830,7 @@ def extract_single(
         all_variables = apply_cf_metadata(
             all_variables, cfg, mk=source.get_mk(year, month), grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=True, source_name=source.name,
+            max_level_m=max_level_m,
         )
         all_variables.attrs.update(pole_attrs)
 

@@ -19,7 +19,7 @@ import numpy as np
 import xarray as xr
 import dask
 
-from .config import Config, resolve_config_value, store_stem
+from .config import Config, resolve_config_value, resolve_max_level_m, store_stem
 from .metadata import apply_cf_metadata
 from .periods import month_days, period_tag
 from .sources import get_source
@@ -130,6 +130,32 @@ def _open_region(file_path, region_id):
     ds = drop_duplicate_coords(ds, "longitude")
     ds = drop_duplicate_coords(ds, "latitude")
     return ds
+
+
+def _check_region_levels(ds, region_id, file_path, reference):
+    """
+    Confirm a region intermediate holds the same model levels as its siblings.
+
+    The stitching concats use ``join="inner"``, which would silently intersect a
+    mismatch away rather than raise. That is exactly what a stale intermediate
+    from an earlier level selection produces: ``reuse_existing`` keeps the old
+    file, and the joined store quietly loses every level the two runs disagree
+    on. Returns the reference selection for the next region to check against.
+    """
+    if "model_level_number" not in ds.dims:
+        return reference
+    levels = [int(v) for v in ds["model_level_number"].values]
+    if reference is None:
+        return levels
+    if levels != reference:
+        raise ValueError(
+            f"region {region_id} intermediate holds {len(levels)} model levels "
+            f"(top {levels[-1]}) but an earlier region holds {len(reference)} "
+            f"(top {reference[-1]}): the level selection changed between runs "
+            f"(level_stride, model_levels or max_level_m). Delete the stale "
+            f"intermediates and re-extract — {file_path}"
+        )
+    return reference
 
 
 def join_month(
@@ -261,6 +287,7 @@ def join_month(
     with dask.config.set(**{"array.slicing.split_large_chunks": True}), \
             xr.set_options(keep_attrs=True):
         lat_arrays = []
+        region_levels = None
         for column in zip(*region_grid):
             lat_datasets = []
             for region_id in column:
@@ -269,7 +296,11 @@ def join_month(
                 file_path = _region_intermediate_path(
                     scratch_dir, stem, date_tag, region_id
                 )
-                lat_datasets.append(_open_region(file_path, region_id))
+                region_ds = _open_region(file_path, region_id)
+                region_levels = _check_region_levels(
+                    region_ds, region_id, file_path, region_levels
+                )
+                lat_datasets.append(region_ds)
 
             log(f"Merging column {column} along latitude")
             merged_col = xr.concat(
@@ -325,7 +356,7 @@ def join_month(
         met = apply_cf_metadata(
             met, cfg, mk=mk, grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=use_interp,
-            source_name=source.name,
+            source_name=source.name, max_level_m=resolve_max_level_m(domain_cfg),
         )
 
         log(f"{date_tag} dataset ready: {dict(met.sizes)} "

@@ -54,18 +54,28 @@ CF_COORD_ATTRS = {
 _FILL_ONLY = {"forecast_period", "forecast_reference_time"}
 
 
-def _levels_description(levels):
+def _levels_description(levels, max_level_m=None):
     """
     Describe a level selection from the level numbers themselves.
 
-    Which levels are kept is configurable (``level_stride``, ``model_levels``),
-    so reading the coordinate is the only way this description stays true to
-    what the store actually holds.
+    Which levels are kept is configurable (``level_stride``, ``model_levels``,
+    ``max_level_m``), so reading the coordinate is the only way this description
+    stays true to what the store actually holds.
+
+    A ceiling has to be named explicitly: capped levels are still 1..n and would
+    otherwise be described as "all n model levels", which is the mislabelling
+    this function exists to prevent.
     """
     n = len(levels)
-    if levels == list(range(1, n + 1)):
-        return f"all {n} model levels"
-    return f"{n} model levels subsampled from 1-{levels[-1]}"
+    contiguous = levels == list(range(1, n + 1))
+    if max_level_m is None:
+        if contiguous:
+            return f"all {n} model levels"
+        return f"{n} model levels subsampled from 1-{levels[-1]}"
+    capped = f"capped at {max_level_m:g} m (the top level brackets the ceiling)"
+    if contiguous:
+        return f"the lowest {n} model levels, {capped}"
+    return f"{n} model levels subsampled from 1-{levels[-1]}, {capped}"
 
 
 def _clean(mapping):
@@ -81,7 +91,7 @@ def _clean(mapping):
 
 
 def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=True,
-                      source_name=None):
+                      source_name=None, max_level_m=None):
     """
     Stamp CF coordinate and global attributes onto a monthly/period dataset.
 
@@ -106,6 +116,10 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         Year (used for the auto title).
     use_interp : bool
         Whether fields were interpolated onto a target grid (affects the comment).
+    max_level_m : float, optional
+        The domain's level ceiling in metres, if it has one. Recorded as an
+        attribute and named in the level description, which would otherwise
+        describe a capped 1..n selection as every level the source has.
 
     Returns
     -------
@@ -122,7 +136,9 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         else:
             ds[name].attrs = {**existing, **attrs}   # CF attrs win
 
-    levels_description = _levels_description([int(v) for v in ds["levels"].values])
+    levels_description = _levels_description(
+        [int(v) for v in ds["levels"].values], max_level_m
+    )
     ds["levels"].attrs["long_name"] = f"UM model level number: {levels_description}"
 
     # --- global attributes ---
@@ -171,6 +187,8 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         attrs["mk_version"] = int(mk)
     if source_name:
         attrs["data_type"] = source_name
+    if max_level_m is not None:
+        attrs["max_level_m"] = float(max_level_m)
     ds.attrs.update(_clean(attrs))
 
     return ds

@@ -113,6 +113,34 @@ data_types:
 | `model_levels` | list of ints, 1-based | exact levels; **overrides** `level_stride` |
 | `model_levels` | `"all"` | every level the source has (L59 global, L70 NZCSM) |
 
+### Capping by height: `max_level_m`
+
+The keys above are per *data type*, so every domain reading the same archive
+shares them. A height ceiling is per **domain** instead — it belongs to what the
+domain is for, not to the archive:
+
+```yaml
+domains:
+  EUROPE:
+    max_level_m: 12000        # metres; omit for no ceiling
+```
+
+It composes with the selection above rather than replacing it: the source picks
+its levels, then the ceiling drops those above it. **One bracketing level above
+the ceiling is kept**, so a consumer interpolating onto exactly `max_level_m` has
+a level to interpolate *to* instead of extrapolating off the top — which means
+the store's top level sits just above its stated ceiling. On the L59 global
+ladder, `12000` keeps 42 levels with the top at 12354.5 m.
+
+The ceiling resolves against `level_height` read from a **mass** cube, because
+u/v are on rho levels (the midpoints between the theta levels) and would resolve
+to a different set. The store records `max_level_m` as a global attribute and
+names the ceiling in the `levels` `long_name`.
+
+> A mid-year Mk change whose `level_height` ladder moved would resolve the same
+> ceiling to a different level count. The append refuses rather than mixing two
+> vertical grids in one store; rebuild the year with `--overwrite`.
+
 Cube names must match the archive's iris names exactly — pick them from the
 [inventory in §3](#3-raw-um-variable-inventory). Any variable group may be set to
 `[]` to drop it entirely.
