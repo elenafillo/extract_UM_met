@@ -37,7 +37,6 @@ CF_COORD_ATTRS = {
         "axis": "T",
     },
     "levels": {
-        "long_name": "UM model level number (subsampled: level 1 plus every 3rd level)",
         "positive": "up",
     },
     "forecast_period": {
@@ -53,6 +52,20 @@ CF_COORD_ATTRS = {
 # For these coords, keep any iris-provided attrs (esp. units) and only fill gaps;
 # for the rest, the CF attrs above are authoritative.
 _FILL_ONLY = {"forecast_period", "forecast_reference_time"}
+
+
+def _levels_description(levels):
+    """
+    Describe a level selection from the level numbers themselves.
+
+    Which levels are kept is configurable (``level_stride``, ``model_levels``),
+    so reading the coordinate is the only way this description stays true to
+    what the store actually holds.
+    """
+    n = len(levels)
+    if levels == list(range(1, n + 1)):
+        return f"all {n} model levels"
+    return f"{n} model levels subsampled from 1-{levels[-1]}"
 
 
 def _clean(mapping):
@@ -109,6 +122,9 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         else:
             ds[name].attrs = {**existing, **attrs}   # CF attrs win
 
+    levels_description = _levels_description([int(v) for v in ds["levels"].values])
+    ds["levels"].attrs["long_name"] = f"UM model level number: {levels_description}"
+
     # --- global attributes ---
     md = cfg.get("metadata", {}) or {}
     if not isinstance(md, dict):
@@ -123,9 +139,14 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
     else:
         source = md.get("source") or (f"{source_name} met archive" if source_name else "met archive")
 
+    # "horizontally" is load-bearing: u/v are interpolated onto the mass grid in
+    # the horizontal only and stay on their native rho levels, while the mass
+    # fields are on theta levels. Consumers have read the old wording as a claim
+    # that the winds had also been de-staggered vertically.
     auto_comment = (
-        "winds moved onto the mass/pressure grid; 1-in-3 model levels retained "
-        f"(level 1 plus every 3rd); grid_mode={grid_mode}"
+        "winds interpolated horizontally onto the mass/pressure grid (horizontal "
+        "only: u/v remain on rho levels, no vertical de-staggering); retained "
+        f"{levels_description}; grid_mode={grid_mode}"
     )
     if not use_interp:
         auto_comment += "; fields kept on the native UM grid (no spatial interpolation)"
