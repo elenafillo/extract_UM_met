@@ -24,6 +24,10 @@ _ZARR_CHUNKS = {"time": 1, "lat": -1, "lon": -1, "levels": 3}
 # The output schema's dims — the only keys a domain may chunk on.
 CHUNK_DIMS = ("time", "levels", "lat", "lon")
 
+# zstd level used when a store is created. Unlike the chunking this is not
+# access-pattern dependent, so it is one top-level config key, not per domain.
+_COMPRESSION_LEVEL = 5
+
 
 def resolve_output_chunks(domain_cfg):
     """
@@ -61,6 +65,22 @@ def resolve_output_chunks(domain_cfg):
             )
         chunks[dim] = size
     return chunks
+
+
+def resolve_compression_level(cfg):
+    """
+    zstd compression level for a store's first write: the top-level
+    ``compression_level:`` config key, or :data:`_COMPRESSION_LEVEL`.
+
+    Validated here, at config resolution, so a bad level fails before any
+    extraction runs rather than at the first write.
+    """
+    level = int(cfg.get("compression_level", _COMPRESSION_LEVEL))
+    if not 1 <= level <= 22:
+        raise ValueError(
+            f"compression_level must be a zstd level from 1 to 22, got {level}"
+        )
+    return level
 
 
 def _rechunk(ds, chunks=None):
@@ -126,7 +146,7 @@ def _to_zarr(ds, store_path, mode=None, append_dim=None, zarr_format=2, encoding
     ds.to_zarr(str(store_path), **kwargs)
 
 
-def _build_encoding(ds, zarr_format):
+def _build_encoding(ds, zarr_format, compression_level):
     """
     Build an explicit, reproducible on-disk encoding for the store's first write.
 
@@ -144,7 +164,7 @@ def _build_encoding(ds, zarr_format):
             import numcodecs
 
             compressor = numcodecs.Blosc(
-                cname="zstd", clevel=3, shuffle=numcodecs.Blosc.SHUFFLE
+                cname="zstd", clevel=compression_level, shuffle=numcodecs.Blosc.SHUFFLE
             )
         except Exception:
             compressor = None
@@ -170,7 +190,7 @@ def _build_encoding(ds, zarr_format):
 
 
 def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
-                               chunks=None):
+                               chunks=None, compression_level=None):
     """
     Append a monthly dataset to a yearly zarr store.
 
@@ -190,6 +210,10 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
         On-disk chunking, from :func:`resolve_output_chunks`. Defaults to
         :data:`_ZARR_CHUNKS`. Only meaningful on the first write — later appends
         inherit the layout the store was created with.
+    compression_level : int, optional
+        zstd level, from :func:`resolve_compression_level`. Defaults to
+        :data:`_COMPRESSION_LEVEL`. Like ``chunks``, only meaningful on the
+        first write.
 
     Returns
     -------
@@ -199,7 +223,8 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
     ds = _rechunk(month_ds, chunks)
 
     if first:
-        encoding = _build_encoding(ds, zarr_format)
+        encoding = _build_encoding(ds, zarr_format,
+                                   compression_level or _COMPRESSION_LEVEL)
         _to_zarr(ds, store_path, mode="w", zarr_format=zarr_format, encoding=encoding)
     else:
         _to_zarr(ds, store_path, append_dim="time")
@@ -207,7 +232,7 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
     return str(store_path)
 
 
-def finalize_attrs(store_path, extra_attrs=None, chunks=None):
+def finalize_attrs(store_path, extra_attrs=None, chunks=None, compression_level=None):
     """
     Write provenance/completeness attributes onto a yearly zarr store.
 
@@ -225,6 +250,9 @@ def finalize_attrs(store_path, extra_attrs=None, chunks=None):
     chunks : dict, optional
         The chunking the store was written with, recorded as ``zarr_chunks``.
         Defaults to :data:`_ZARR_CHUNKS`.
+    compression_level : int, optional
+        The zstd level the store was written with, recorded as
+        ``zarr_compression``. Defaults to :data:`_COMPRESSION_LEVEL`.
 
     Returns
     -------
@@ -250,6 +278,10 @@ def finalize_attrs(store_path, extra_attrs=None, chunks=None):
         "time_start": str(times[0]),
         "time_end": str(times[-1]),
         "zarr_chunks": str(chunks or _ZARR_CHUNKS),
+        "zarr_compression": (
+            f"blosc(cname=zstd, clevel={compression_level or _COMPRESSION_LEVEL}, "
+            f"shuffle=SHUFFLE)"
+        ),
         "months_present": months_present,
         "n_months_present": len(months_present),
         "missing_months": missing_months,
