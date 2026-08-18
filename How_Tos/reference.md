@@ -113,6 +113,34 @@ data_types:
 | `model_levels` | list of ints, 1-based | exact levels; **overrides** `level_stride` |
 | `model_levels` | `"all"` | every level the source has (L59 global, L70 NZCSM) |
 
+### Capping by height: `max_level_m`
+
+The keys above are per *data type*, so every domain reading the same archive
+shares them. A height ceiling is per **domain** instead — it belongs to what the
+domain is for, not to the archive:
+
+```yaml
+domains:
+  EUROPE:
+    max_level_m: 12000        # metres; omit for no ceiling
+```
+
+It composes with the selection above rather than replacing it: the source picks
+its levels, then the ceiling drops those above it. **One bracketing level above
+the ceiling is kept**, so a consumer interpolating onto exactly `max_level_m` has
+a level to interpolate *to* instead of extrapolating off the top — which means
+the store's top level sits just above its stated ceiling. On the L59 global
+ladder, `12000` keeps 42 levels with the top at 12354.5 m.
+
+The ceiling resolves against `level_height` read from a **mass** cube, because
+u/v are on rho levels (the midpoints between the theta levels) and would resolve
+to a different set. The store records `max_level_m` as a global attribute and
+names the ceiling in the `levels` `long_name`.
+
+> A mid-year Mk change whose `level_height` ladder moved would resolve the same
+> ceiling to a different level count. The append refuses rather than mixing two
+> vertical grids in one store; rebuild the year with `--overwrite`.
+
 Cube names must match the archive's iris names exactly — pick them from the
 [inventory in §3](#3-raw-um-variable-inventory). Any variable group may be set to
 `[]` to drop it entirely.
@@ -197,6 +225,14 @@ Float32 with zstd Blosc compression, CF `time` encoding, NaN fill. Single-day
 smoke tests write a separate `…_Met_{YYYYMMDD}.zarr` debug store, and
 `--suffix TAG` writes `…_{TAG}_Met_{YYYY}.zarr` beside the main store.
 
+The zstd level is the top-level `compression_level:` key in config (1–22,
+default 5); it is not per domain, since compression — unlike chunking — does not
+depend on how the store is read. Level 5 is roughly 10–15% smaller than level 3
+for a modestly slower write. Like the chunk layout it is **fixed when a store is
+created**: changing it does nothing to a year that already exists until you
+rebuild it with `--overwrite`. The level a store was written with is recorded on
+it as `zarr_compression`, next to `zarr_chunks`.
+
 `zarr_format` (config, or `--zarr-format`) picks the on-disk version: `2` is
 readable by both zarr 2.18.7 and 3.x, `3` by 3.x only. Per-region scratch
 intermediates are written in the same format, so scratch and output never
@@ -222,14 +258,47 @@ dim. An unrecognised key (`latitude:`) raises at config load rather than silentl
 leaving the default in place, and `run` prints the resolved chunks before it
 starts. The shape actually used is recorded on the store as `zarr_chunks`.
 
-Which way to go depends on how you read the store: keep `time: 1` for reading
-whole fields at scattered timesteps, and raise it when you mostly pull long time
-series at a few points, which the default makes expensive (one chunk touched per
-timestep).
+Which way to go depends on how you read the store. Three cases:
+
+**Whole fields at scattered timesteps** — the default. `time: 1`, lat/lon whole,
+so one timestep's field is a handful of chunks and nothing neighbouring is
+decompressed with it.
+
+**Long time series at a few points** — raise `time`. The default makes this
+expensive: one chunk touched per timestep, each holding a whole plane you throw
+away.
+
+```yaml
+    output_chunks:
+      time: 24
+```
+
+**A small spatial box at one timestep, then subset levels** — the pattern a
+Lagrangian dispersion model reads with. Both defaults hurt here: whole lat/lon
+chunks mean a 10-cell box costs a full-plane decompress, and `levels: 3` means 20
+chunks to walk a 59-level column. Take a whole column in one chunk and tile the
+horizontal instead:
+
+```yaml
+    output_chunks:
+      time: 1
+      levels: -1
+      lat: 96
+      lon: 96
+```
+
+On EUROPE (1122 × 1282, 59 levels) that is 12 × 14 = 168 tiles per timestep and a
+2.1 MB chunk, against the 34 MB `(3, 1122, 1282, 2)` chunks the 2023 store was
+built with (the default layout plus `time: 2`). `levels: -1`
+applies only to the variables that have levels; surface fields such as
+`surface_air_pressure` are simply tiled `(1, 96, 96)`. The cost is chunk count —
+a tiled year holds far more, smaller chunks than the default, which is worth
+knowing before pointing it at a filesystem that dislikes many small files.
 
 > **Applies at store creation only.** The chunk layout is fixed when a store is
-> first written; later months inherit it. Changing `output_chunks` for a year
-> that already exists has no effect until you rebuild it with `--overwrite`.
+> first written; later months inherit it, and appends are rechunked onto it.
+> Changing `output_chunks` for a year that already exists has no effect until you
+> rebuild that year with `--overwrite` — the same is true of `compression_level`.
 
 ---
 

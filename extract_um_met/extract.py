@@ -20,7 +20,7 @@ import numpy as np
 import xarray as xr
 import dask
 
-from .config import Config, resolve_config_value, store_stem
+from .config import Config, resolve_config_value, resolve_max_level_m, store_stem
 from .iris_io import load_files, delete_iris
 from .grid import build_target_grid
 from .periods import month_days, period_tag
@@ -36,14 +36,11 @@ from .rotated import (
 
 # Variable groups (which cubes to extract and how each is gridded) now live on
 # the MetSource — see extract_um_met.sources. They are selected by (name,
-# want_levels) via _pick. Time-averaged fields (fluxes/stresses) are 3-hour means
-# stamped at the interval MIDPOINT from a different forecast run; we re-stamp them
-# to the interval END to align with the instantaneous fields (see
-# _restamp_to_interval_end), recording the convention in this note.
-_AVERAGED_NOTE = (
-    "3-hour time-mean ending at the timestamp; re-stamped from the UM interval "
-    "midpoint to align with the instantaneous fields."
-)
+# want_levels) via _pick. Time-averaged fields (fluxes/stresses) are means over
+# the source's averaging window, stamped at the interval MIDPOINT from a different
+# forecast run; we re-stamp them to the interval END to align with the
+# instantaneous fields (see _restamp_to_interval_end, which also describes the
+# window in the fields' `averaging*` attributes).
 
 
 def _has_levels(cube):
@@ -74,6 +71,88 @@ def _pick(cubes, name, want_levels):
     return matches[0]
 
 
+def _theta_ladder_cube(cube, source):
+    """
+    The first leveled mass cube — the theta ladder a height ceiling resolves against.
+
+    Must be a mass field: u/v sit on rho levels, which are the midpoints between
+    the theta levels, so the same ceiling resolved against a wind cube selects a
+    different set of level numbers.
+    """
+    name = next((n for n, want_levels in source.mass_vars if want_levels), None)
+    if name is None:
+        raise ValueError(
+            f"max_level_m needs a model-level mass field to read level_height from, "
+            f"but no mass_vars entry for source {source.name!r} carries model levels "
+            f"(mass_vars={source.mass_vars})."
+        )
+    return _pick(cube, name, True)
+
+
+def _apply_max_level(levels, mass_cube, max_level_m):
+    """
+    Drop levels above ``max_level_m``, keeping the first selected level above it.
+
+    That bracketing level is deliberate: a consumer interpolating onto a ceiling
+    of exactly ``max_level_m`` (GLIDE's ``alt_max_m``) then has a level above to
+    interpolate to instead of extrapolating off the top of the store. The store's
+    top level therefore sits just *above* its stated ceiling.
+
+    Applied to the already-resolved selection, so the bracketing level is the next
+    level the store would have held, not the next model level in the archive.
+    """
+    heights = dict(zip(
+        mass_cube.coord("model_level_number").points,
+        mass_cube.coord("level_height").points,
+    ))
+    below = [lvl for lvl in levels if heights[lvl] <= max_level_m]
+    above = [lvl for lvl in levels if heights[lvl] > max_level_m]
+    if not below:
+        raise ValueError(
+            f"max_level_m={max_level_m:g} is below the lowest selected model level "
+            f"(level {levels[0]} at {heights[levels[0]]:g} m); nothing would be extracted."
+        )
+    return below + above[:1]
+
+
+def _averaging_attrs(time_coord):
+    """
+    Describe the averaging window of a time-averaged cube, from its time bounds.
+
+    Two things a consumer needs and cannot get from ``cell_methods``, whose
+    ``interval:`` is the UM's *sampling* interval inside the window rather than
+    the window itself: how long the window is, and where the timestamp sits on
+    it once :func:`_restamp_to_interval_end` has moved it to the interval end.
+
+    ``time`` is still on the (forecast_period, forecast_reference_time) grid here
+    — :func:`_build_time_axis` collapses it later — so ``bounds`` is 3-D and
+    ``bounds[0]`` is a whole row of cells, not one window. Flatten to one row per
+    cell first; measuring the row gave 6 h for a 3-hourly field.
+    """
+    bounds = np.sort(time_coord.bounds.reshape(-1, 2), axis=1)
+    widths = np.unique(bounds[:, 1] - bounds[:, 0])
+    if widths.size != 1:
+        raise ValueError(
+            f"time-averaged field has {widths.size} different averaging windows "
+            f"in one period ({widths} in {time_coord.units}); one 'averaging' "
+            f"attribute cannot describe them all."
+        )
+    to_date = time_coord.units.num2date
+    hours = (to_date(bounds[0, 1]) - to_date(bounds[0, 0])).total_seconds() / 3600
+    return {
+        "averaging": (
+            f"{hours:g}-hour time-mean over [timestamp - {hours:g} h, timestamp], "
+            f"stamped at the interval END (re-stamped from the UM's interval-midpoint "
+            f"convention) so it shares the instantaneous fields' time axis. Read as an "
+            f"instantaneous value its validity time is the window midpoint, "
+            f"{hours / 2:g} h before the timestamp. The interval in cell_methods is the "
+            f"UM's sampling interval within the window, not the window itself."
+        ),
+        "averaging_period_hours": hours,
+        "averaging_midpoint_offset_hours": -hours / 2,
+    }
+
+
 def _restamp_to_interval_end(cube):
     """
     Re-stamp a time-averaged cube's time onto its interval END, dropping bounds.
@@ -81,15 +160,18 @@ def _restamp_to_interval_end(cube):
     Averaged fields (fluxes/stresses) are stored at the interval midpoint with
     time bounds [start, end]; the end equals the instantaneous fields' valid time.
     Moving the point to the end lets them share one time axis. Modifies and
-    returns the cube.
+    returns the cube, along with the ``averaging*`` attributes describing the
+    window — read off the bounds here, the last point at which they exist.
     """
     tc = cube.coord("time")
+    averaging = {}
     if tc.has_bounds():
+        averaging = _averaging_attrs(tc)
         tc.points = tc.bounds.max(axis=-1)   # interval end (robust to bound order)
         tc.bounds = None
     if cube.coords("forecast_period") and cube.coord("forecast_period").has_bounds():
         cube.coord("forecast_period").bounds = None
-    return cube
+    return cube, averaging
 
 
 def _build_time_axis(ds, keep_provenance):
@@ -376,6 +458,7 @@ def extract_region(
 
     mk = source.get_mk(year, month_int)
     levels = source.levels()
+    max_level_m = resolve_max_level_m(domain_cfg)
 
     # Resolve the target grid if not provided.
     if target is None:
@@ -413,6 +496,13 @@ def extract_region(
         cube = load_files(files, source.load_vars(), scratch_root + os.sep)
         log(f"region {region_id} loaded in {(datetime.datetime.now() - t0).total_seconds():.1f}s")
 
+        # The ceiling needs the Mk's level_height ladder, so it can only resolve
+        # once a cube is loaded — and before the level selection is used below.
+        if max_level_m is not None:
+            levels = _apply_max_level(levels, _theta_ladder_cube(cube, source), max_level_m)
+            log(f"max_level_m={max_level_m:g}: keeping {len(levels)} levels "
+                f"(top level {levels[-1]}, which brackets the ceiling)")
+
         # --- Instantaneous group: mass-grid variables + staggered winds -------
         # Cubes are selected by name + level presence (see _pick) so a changed
         # archive raises rather than silently mis-selecting.
@@ -438,16 +528,16 @@ def extract_region(
         del most_variables, winds
 
         # --- Averaged group: fluxes/stresses, re-stamped to the interval end ---
-        # These are 3-hour means from a different forecast run, so they can't be
+        # These are time-means from a different forecast run, so they can't be
         # merged with the instantaneous fields until re-stamped onto the shared
-        # valid-time axis (see AVERAGED_* and _restamp_to_interval_end).
+        # valid-time axis (see _restamp_to_interval_end).
         avg_arrays = []
         for name in source.averaged_mass_vars:
-            c = _restamp_to_interval_end(_pick(cube, name, False))
-            avg_arrays.append(_dataarray_from_iris_safely(c))
+            c, averaging = _restamp_to_interval_end(_pick(cube, name, False))
+            avg_arrays.append(_dataarray_from_iris_safely(c).assign_attrs(averaging))
         for name in source.averaged_staggered_vars:
-            c = _restamp_to_interval_end(_pick(cube, name, True))
-            da = _dataarray_from_iris_safely(c)
+            c, averaging = _restamp_to_interval_end(_pick(cube, name, True))
+            da = _dataarray_from_iris_safely(c).assign_attrs(averaging)
             if "model_level_number" in da.coords:
                 da = da.drop_vars("model_level_number")
             avg_arrays.append(da.interp(latitude=mass_lat, longitude=mass_lon))
@@ -481,7 +571,6 @@ def extract_region(
             for da in avg_arrays:
                 da = _build_time_axis(da, keep_provenance=False)
                 _check_unique_time(da, region_id, tag)
-                da.attrs["averaging"] = _AVERAGED_NOTE
                 avg_das.append(da)
             all_variables = xr.merge([inst, *avg_das], join="inner", compat="override")
             log(f"merged {len(avg_das)} time-averaged field(s) onto the valid-time grid")
@@ -502,16 +591,41 @@ def extract_region(
             log(f"native mode: keeping region {region_id} on its UM grid (no interpolation)")
 
         # Slice to this region's bounds, handling dateline crossing.
+        #
+        # Native passthrough skips the interp above, and that interp is what
+        # otherwise applies the domain's lat/lon bounds — leaving the store the
+        # full union of world_regions_codes however narrow the bounds were. So
+        # clip the region box onto target_lat/target_lon here, which _build_native_grid
+        # has already subset to those bounds. In interp mode the window is the whole
+        # globe and the clamps below are no-ops.
         lat_min, lat_max = region_bounds[region_id][0], region_bounds[region_id][1]
         lon_min, lon_max = region_bounds[region_id][2], region_bounds[region_id][3]
+        lon_lo, lon_hi = -180.0, 180.0
+        if not use_interp:
+            lat_min = max(lat_min, float(target_lat.min()))
+            lat_max = min(lat_max, float(target_lat.max()))
+            lon_lo, lon_hi = float(target_lon.min()), float(target_lon.max())
+
         all_variables = all_variables.sel(latitude=slice(lat_min, lat_max))
         if lon_min <= lon_max:
-            all_variables = all_variables.sel(longitude=slice(lon_min, lon_max))
+            all_variables = all_variables.sel(
+                longitude=slice(max(lon_min, lon_lo), min(lon_max, lon_hi))
+            )
         else:
-            east = all_variables.sel(longitude=slice(lon_min, 180.0))
-            west = all_variables.sel(longitude=slice(-180.0, lon_max))
+            east = all_variables.sel(longitude=slice(max(lon_min, lon_lo), min(180.0, lon_hi)))
+            west = all_variables.sel(longitude=slice(max(-180.0, lon_lo), min(lon_max, lon_hi)))
             all_variables = xr.concat([east, west], dim="longitude")
             log(f"region {region_id} crosses dateline; concatenated east/west slices")
+
+        # Now that the bounds actually remove data, a region listed in
+        # world_regions_codes but outside them yields an empty tile that would only
+        # fail later, in the join.
+        if all_variables.sizes["latitude"] == 0 or all_variables.sizes["longitude"] == 0:
+            raise ValueError(
+                f"region {region_id} has no overlap with the domain's lat/lon bounds "
+                f"(lat {lat_min}..{lat_max}, lon {lon_lo}..{lon_hi}); drop it from "
+                f"world_regions_codes or widen the bounds."
+            )
 
         result = _normalize_region_shape(all_variables).sortby("time")
         log(f"region {region_id} extracted; dims {dict(result.sizes)}")
@@ -612,6 +726,7 @@ def extract_single(
         pass
 
     levels = source.levels()
+    max_level_m = resolve_max_level_m(domain_cfg)
     if target is None:
         target_lat, target_lon, _ = build_target_grid(domain_cfg, cfg)
     else:
@@ -626,6 +741,13 @@ def extract_single(
         files = source.list_files(date)   # region=None (non-tiled)
         cube = load_files(files, source.load_vars(), scratch_root + os.sep)
         log(f"loaded {len(files)} file(s) in {(datetime.datetime.now() - t0).total_seconds():.1f}s")
+
+        # As in extract_region: the ceiling resolves against the loaded ladder,
+        # before `levels` is used by _sub below.
+        if max_level_m is not None:
+            levels = _apply_max_level(levels, _theta_ladder_cube(cube, source), max_level_m)
+            log(f"max_level_m={max_level_m:g}: keeping {len(levels)} levels "
+                f"(top level {levels[-1]}, which brackets the ceiling)")
 
         target_cube = latlon_target_cube(target_lat, target_lon)
 
@@ -672,8 +794,8 @@ def extract_single(
         #      vector rotation; see MetSource.deferred_vars.)
         avg_arrays = []
         for name in source.averaged_mass_vars:
-            c = _restamp_to_interval_end(_pick(cube, name, False))
-            avg_arrays.append(_regrid_da(c, name))
+            c, averaging = _restamp_to_interval_end(_pick(cube, name, False))
+            avg_arrays.append(_regrid_da(c, name).assign_attrs(averaging))
         del cube
 
         # --- Load into memory ---
@@ -691,7 +813,6 @@ def extract_single(
             for da in avg_arrays:
                 da = _build_time_axis(da, keep_provenance=False)
                 _check_unique_time(da, "single", date)
-                da.attrs["averaging"] = _AVERAGED_NOTE
                 avg_das.append(da)
             all_variables = xr.merge([inst, *avg_das], join="inner", compat="override")
         else:
@@ -709,6 +830,7 @@ def extract_single(
         all_variables = apply_cf_metadata(
             all_variables, cfg, mk=source.get_mk(year, month), grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=True, source_name=source.name,
+            max_level_m=max_level_m,
         )
         all_variables.attrs.update(pole_attrs)
 

@@ -19,6 +19,13 @@ zarr_save_directory: "/gws/ssde/j25b/acrg/{user}/satellite_met_zarr/"
 # Zarr format version (2 for backward compatibility with zarr 2.18.7, or 3 for newer zarr)
 zarr_format: 2
 
+# zstd compression level for the output stores (1-22). Higher is smaller and
+# slower to write; 5 is ~10-15% smaller than 3 for a modestly slower write. Like
+# the chunking it is fixed when a store is created, so changing it only affects
+# new stores (or an existing year rebuilt with --overwrite). Not per domain:
+# compression, unlike chunking, does not depend on how the store is read.
+compression_level: 5
+
 # Shared directory holding the reference footprint for each domain
 reference_footprints_directory: "/gws/ssde/j25b/acrg/elenafi/example_footprints"
 
@@ -178,6 +185,29 @@ domains:
     domain_name: "INDIA"
     footprint: "GOSAT-INDIA-SAM-column_SOUTHASIA_201503.nc"
     world_regions_codes: [3, 7]
+
+  EUROPE:
+    domain_name: "EUROPE"
+    world_regions_codes: [2, 5, 6, 9]
+    intermediate_period: week
+    # Height ceiling in metres: drops model levels above it, keeping one
+    # bracketing level so a consumer can still interpolate up to the ceiling
+    # itself. Per domain, and composes with the source's level_stride /
+    # model_levels. On the L59 global ladder, 12000 keeps 42 levels.
+    # max_level_m: 12000
+    grid:
+      mode: native
+      lat_bounds: [10.0, 79.5]
+      lon_bounds: [-98.0, 39.0]
+      native_grid: majority  # or "latest", "Mk10", etc.
+    # Tuned for a small-bbox reader (one timestep, a spatial box, then subset
+    # levels): a whole column in one chunk, tiled 96 x 96 in space, so a box read
+    # touches a few 2 MB chunks instead of decompressing whole 1122 x 1282 planes.
+    output_chunks:
+      time: 1
+      levels: -1
+      lat: 96
+      lon: 96
 
   # To extract an existing domain on a different grid, don't define a second
   # domain here — run it with `--grid-mode native --suffix native` so the variant
