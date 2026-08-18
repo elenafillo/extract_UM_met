@@ -2,7 +2,7 @@
 
 The UM vertical coordinate is terrain-following, so one static 2-D field — the
 orography — fixes the height of every model level. `extract-topog` writes it for
-a domain, or for the whole globe.
+a domain of your own, or for the whole globe via the ready-made `GLOBAL` domain.
 
 > **See also:** [concepts.md](concepts.md) (Mk blocks, grid modes),
 > [reference.md](reference.md) (what a store contains). The evidence behind
@@ -15,8 +15,13 @@ a domain, or for the whole globe.
 ## 1. Extracting
 
 ```bash
+# one of your own domains
 python -m extract_um_met extract-topog --domain EUROPE --date 2023
 # → {ancillary_save_directory}/EUROPE/EUROPE_topog_2023.nc
+
+# the whole globe — GLOBAL ships in config.example.yaml, nothing to configure
+python -m extract_um_met extract-topog --domain GLOBAL --date 2023
+# → {ancillary_save_directory}/GLOBAL/GLOBAL_topog_2023.nc
 ```
 
 `--date` is a year, not a month: the field is static within a year but changes
@@ -24,11 +29,11 @@ between Mk blocks, so the year selects both the ancillary and the target grid.
 
 What you get depends on the domain's `grid.mode`:
 
-| Mode | Output | Interpolates? | Example size |
-| ---- | ------ | ------------- | ------------ |
-| `global` | the whole globe at UM native resolution | no | 19.7 MB |
-| `native` | a subset of the native grid | no | 2.9 MB (EUROPE) |
-| `footprint`, `regular` | interpolated onto the domain's met target grid | yes | 0.4 MB (NORTHAFRICA) |
+| Mode | Domain | Output | Interpolates? | Example size |
+| ---- | ------ | ------ | ------------- | ------------ |
+| `global` | `GLOBAL` (shipped) | the whole globe at UM native resolution | no | 19.7 MB |
+| `native` | yours | a subset of the native grid | no | 2.9 MB (EUROPE) |
+| `footprint`, `regular` | yours | interpolated onto the domain's met target grid | yes | 0.4 MB (NORTHAFRICA) |
 
 The output lands on the same grid the met run builds for that domain, so it
 matches the store cell for cell. Getting this wrong is silent — a half-cell
@@ -81,7 +86,9 @@ the orography lands beside the store it belongs with. Do not write
 `"{zarr_save_directory}"` in config — `resolve_config_value` expands one level
 only and leaves a literal `{user}` in the path.
 
-Global output is a domain with `mode: global`:
+Global output is nothing more than a domain with `mode: global`. This block
+already ships in `config.example.yaml`, so `--domain GLOBAL` works as it stands —
+copy it only if you are writing a config from scratch:
 
 ```yaml
 GLOBAL:
