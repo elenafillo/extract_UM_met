@@ -1,7 +1,8 @@
 # Known problems
 
-Defects that have been found in this pipeline, and quirks of individual files in
-the archive that it cannot paper over.
+Defects that have been found in this pipeline, quirks of individual files in the
+archive that it cannot paper over, and quirks of JASMIN itself that arrive
+disguised as either.
 
 [Troubleshooting](troubleshooting.md) answers *"it printed this error, what do I
 type"*. This page answers *"my output looks wrong"* and *"is the store I already
@@ -102,5 +103,55 @@ carries the same `t2`.
 The pipeline already absorbs this. `_restamp_to_interval_end` moves a bounded
 time point to its interval end, which here is exactly 15:00, putting the averaged
 fields back on the shared axis. 
+
+## 3. Environment quirks
+
+Neither the files nor this code, but they surface as if they were.
+
+### A job can fail with "No such file" for a file that is definitely there
+
+A run dies about a minute in, inside `iris.load`, on an archive file you can list
+and read perfectly well from a login node:
+
+```
+FileNotFoundError: [Errno 2] No such file or directory:
+  '/gws/ssde/j25a/name/met_archive/Global/UMG_Mk11PT/MO202301180000.UMG_Mk11_I_L59PT2.pp'
+```
+
+The archive entries are **symlinks into `/badc`**:
+
+```
+MO202301180000.UMG_Mk11_I_L59PT2.pp -> /badc/name_nwp/data/global/UMG_Mk11/2023/01/18/...
+```
+
+`MetSource.list_files` finds files with `glob.glob`, which matches a symlink by
+name **without following it**, so the run reports the full set ("8 file(s) to
+load") and looks healthy. `iris.load` then calls `open()`, which does follow the
+link — and if `/badc` is not resolvable on the node the job landed on, the link
+dangles and the open fails with ENOENT. A glob that succeeds followed by an open
+that reports the file missing is the signature.
+
+**Not every node has the archive.** This is a property of the node, not of the
+day or the file: an identical job minutes earlier, on a different node of the
+same partition, read the same days without complaint. Don't treat any particular
+node as the culprit — assume any node may come up without `/badc` and check.
+
+Before concluding data is missing, check from a login node — `ls -laL` on the
+file (dereferencing the link) and a count of the day's files against a day you
+know works. If those are fine, the archive is fine.
+
+**Resubmit.** It usually lands on a working node; `--exclude=<node>` if it keeps
+returning to a bad one. For anything longer than a smoke test, preflight it so a
+bad node costs seconds rather than a wasted allocation:
+
+```bash
+echo "running on $(hostname)"
+PROBE=<one file the run needs>
+if ! head -c 1 "$PROBE" >/dev/null 2>&1; then
+    echo "PREFLIGHT FAIL on $(hostname): cannot read $PROBE"
+    echo "  target: $(readlink -f "$PROBE" 2>/dev/null || echo '<unresolvable>')"
+    exit 1
+fi
+```
 
 ---

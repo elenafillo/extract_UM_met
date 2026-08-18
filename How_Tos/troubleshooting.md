@@ -36,6 +36,7 @@ come from; the message quoted is the one the tool actually prints.
 | `No archive files matched: {pattern}` / `No files matched: {pattern}` | Usually `data_types.<type>.archive_directory` is wrong or unset. Check the printed pattern against what is actually on disk — it tells you the Mk folder and filename the tool expected. |
 | `No Mk version found for year=…, month=…` | The date is outside the known Mk calendar: before 2011-01, or **past the newest block**, which happens when the archive gains a new Mk. Extend `iris_io.get_Mk` and `cli.MK_SAMPLE_TIMESTEPS` — see [concepts.md §2](concepts.md#2-the-global-um-archive-um_global). |
 | `File not found: {filepath}` | A single expected file is absent. Known-bad files are skipped on load; a hard failure here means the archive is incomplete for that timestep. |
+| `FileNotFoundError` from inside `iris.load`, for a file you *can* read from a login node | The node, not the archive: the archive entries are symlinks into `/badc`, which some nodes come up without. The glob matches the link, the open follows it and fails. Resubmit, and preflight long jobs — [known_problems §3](known_problems.md#3-environment-quirks). |
 | `UM1p5km Mk calendar for YYYY-MM is not yet defined` | Only Mk4 (2017-07 onward) is confirmed for the 1.5 km UK source. Earlier boundaries are unknown — see the [roadmap](roadmap_and_contributing.md). |
 | `uk16 region bounds are not generated yet` | `UM1p5km` is registered but not runnable: its 16 rotated-pole tiles have no saved true-lat/lon bounds yet. |
 
