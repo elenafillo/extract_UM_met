@@ -32,6 +32,11 @@ python -m extract_um_met <command> [options]
 
 Run any command with `-h` to see its options, e.g. `python -m extract_um_met run -h`.
 
+:::{note}
+**`extract-topog` is documented on its own page**, [topography.md](topography.md).
+It writes the static orography ancillary that pairs with a store.
+:::
+
 ---
 
 ## 2. `run` — the main workflow
