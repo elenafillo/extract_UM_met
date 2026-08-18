@@ -28,6 +28,7 @@ from .config import Config, load_config, resolve_config_value, store_stem
 from .iris_io import get_Mk, load_iris, remove_coord_callback
 from .regions import get_saved_region_bounds
 from .grid import extract_native_grid, save_native_grid, build_target_grid
+from .topog import extract_topog
 from .extract import extract_region, extract_single
 from .join import join_month, cleanup_region_intermediates
 from .periods import period_chunks, period_tag, resolve_intermediate_period
@@ -856,6 +857,49 @@ def cmd_extract(args):
             print(f"  {period_tag(year, month, days)} region {region_id} → {path}")
 
 
+def _make_topog_parser(subparsers):
+    """Create the 'extract-topog' subcommand parser."""
+    parser = subparsers.add_parser(
+        'extract-topog',
+        help='Extract the static orography ancillary for a domain-year'
+    )
+
+    parser.add_argument(
+        '--domain',
+        type=str,
+        required=True,
+        help='Domain key (e.g., SA) or domain_name (e.g., SOUTHAMERICA)'
+    )
+
+    parser.add_argument(
+        '--date',
+        type=str,
+        required=True,
+        help='Year to extract for (YYYY). The orography is static within a year '
+             'but changes between Mk blocks, so this selects both the ancillary '
+             'and the target grid.'
+    )
+
+    parser.set_defaults(func=cmd_extract_topog)
+    return parser
+
+
+def cmd_extract_topog(args):
+    """Extract the orography ancillary for one domain-year."""
+    cfg = Config()
+    domain_key = cfg.resolve_domain_name(args.domain)
+
+    date_str = str(args.date).strip()
+    if not date_str.isdigit() or len(date_str) != 4:
+        print(f"ERROR: extract-topog expects --date YYYY, got '{args.date}'")
+        sys.exit(1)
+    year = int(date_str)
+
+    print(f"Extracting orography for {cfg.get_domain(domain_key)['domain_name']} {year}")
+    path = extract_topog(domain_key, cfg, year)
+    print(f"  → {path}")
+
+
 def main(argv=None):
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -872,6 +916,7 @@ def main(argv=None):
 
     _make_run_parser(subparsers)
     _make_extract_parser(subparsers)
+    _make_topog_parser(subparsers)
     _make_native_grid_parser(subparsers)
 
     args = parser.parse_args(argv)

@@ -70,6 +70,14 @@ The data types, Mk blocks & resolutions, world regions, grid modes.
 Variables, model levels, output format and chunking, raw UM inventory.
 :::
 
+:::{grid-item-card} Topography
+:link: topography
+:link-type: doc
+
+The surface-altitude ancillary: which Mk uses which field, domain and global
+output, and deriving geopotential.
+:::
+
 :::{grid-item-card} Troubleshooting
 :link: troubleshooting
 :link-type: doc
@@ -112,6 +120,7 @@ issue, and who wrote this.
 | Change which variables or levels are extracted | [Reference §2](reference.md#2-choosing-your-own-variables-and-levels) |
 | Change how the output store is chunked | [Reference §4](reference.md#4-output-format-and-chunking) |
 | Find out what is in a store I already have | [Reference §1](reference.md#1-what-a-store-contains) |
+| Get topography / geopotential for a domain | [Topography](topography.md) |
 | Submit a big run to SLURM | [Extracting §7](extracting.md#7-run-under-slurm) |
 | Work out why a run failed | [Troubleshooting](troubleshooting.md) |
 | Report a bug or request a feature | [Roadmap and contributing](roadmap_and_contributing.md) |
@@ -125,6 +134,7 @@ setup
 extracting
 concepts
 reference
+topography
 troubleshooting
 known_problems
 codebase
