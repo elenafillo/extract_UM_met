@@ -31,7 +31,7 @@ from .iris_io import load_files, delete_iris, _pick, _theta_ladder_cube
 from .staggering import destagger_winds_onto_theta, rho_ladder, rho_ladder_attrs
 from .grid import build_target_grid
 from .periods import month_days, period_tag
-from .sources import get_source
+from .sources import get_domain_source
 from .metadata import to_zarr_schema, add_delta_attrs, apply_cf_metadata
 from .rotated import (
     latlon_target_cube,
@@ -405,7 +405,7 @@ def extract_region(
     # Resolve the met data type ("source") — where the files live, the Mk
     # calendar, level set, and region scheme all come from it.
     if source is None:
-        source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
+        source = get_domain_source(domain_cfg, cfg)
 
     scratch_root = resolve_config_value(cfg.get("scratch_path", ""), cfg.data)
     if scratch_dir is None:
@@ -701,7 +701,7 @@ def extract_single(
     domain_name = domain_cfg["domain_name"]
     stem = store_stem(domain_name, suffix)
     if source is None:
-        source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
+        source = get_domain_source(domain_cfg, cfg)
 
     scratch_root = resolve_config_value(cfg.get("scratch_path", ""), cfg.data)
     if scratch_dir is None:

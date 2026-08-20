@@ -12,11 +12,15 @@ pattern differs. The layout applies to the data variables only; coordinates are
 always written whole.
 """
 
+import contextlib
 import datetime
 import getpass
+import warnings
 
 import numpy as np
 import xarray as xr
+
+from . import glide
 
 
 _ZARR_CHUNKS = {"time": 1, "lat": -1, "lon": -1, "levels": 3}
@@ -24,9 +28,13 @@ _ZARR_CHUNKS = {"time": 1, "lat": -1, "lon": -1, "levels": 3}
 # The output schema's dims — the only keys a domain may chunk on.
 CHUNK_DIMS = ("time", "levels", "lat", "lon")
 
-# zstd level used when a store is created. Unlike the chunking this is not
-# access-pattern dependent, so it is one top-level config key, not per domain.
+# zstd level used when a store is created, unless the top-level config key or the
+# domain sets one.
 _COMPRESSION_LEVEL = 5
+
+# On-disk precision for the data variables. 'int16' writes the variables in
+# glide.QUANT_RANGES with CF scale_factor/add_offset and leaves the rest float32.
+_PRECISIONS = ("float32", "int16")
 
 
 def resolve_output_chunks(domain_cfg):
@@ -67,20 +75,54 @@ def resolve_output_chunks(domain_cfg):
     return chunks
 
 
-def resolve_compression_level(cfg):
+def resolve_compression_level(cfg, domain_cfg):
     """
-    zstd compression level for a store's first write: the top-level
-    ``compression_level:`` config key, or :data:`_COMPRESSION_LEVEL`.
+    zstd compression level for a store's first write: the domain's
+    ``compression_level:`` — which its ``output_profile`` may have supplied — else
+    the top-level config key, else :data:`_COMPRESSION_LEVEL`.
 
     Validated here, at config resolution, so a bad level fails before any
     extraction runs rather than at the first write.
     """
-    level = int(cfg.get("compression_level", _COMPRESSION_LEVEL))
+    default = cfg.get("compression_level", _COMPRESSION_LEVEL)
+    level = int(domain_cfg.get("compression_level", default))
     if not 1 <= level <= 22:
         raise ValueError(
             f"compression_level must be a zstd level from 1 to 22, got {level}"
         )
     return level
+
+
+def resolve_precision(domain_cfg):
+    """
+    On-disk precision for a domain's data variables: its ``precision:`` key —
+    which an ``output_profile`` may have supplied — or float32.
+
+    Fixed when a store is created, like the chunking and the compression level,
+    so changing it needs ``--overwrite``. Validated here so a typo fails before
+    any extraction runs.
+
+    ``int16`` is only accepted under ``output_profile: glide``. The quantisation
+    ranges are GLIDE's own table, published for their field set, so on any other
+    domain a variable outside that set — ``air_pressure``, which the glide
+    profile drops, or anything a ``data_types:`` override adds — would quietly
+    stay float32 and the store would be part quantised with nothing on its face
+    saying which half.
+    """
+    precision = domain_cfg.get("precision", "float32")
+    if precision not in _PRECISIONS:
+        raise ValueError(
+            f"domain precision must be one of {list(_PRECISIONS)}, "
+            f"got {precision!r}"
+        )
+    if precision == "int16" and domain_cfg.get("output_profile") != "glide":
+        raise ValueError(
+            "domain precision: int16 needs output_profile: glide. The "
+            "quantisation ranges only cover GLIDE's field set, so elsewhere the "
+            "store would come out part int16 and part float32. This domain has "
+            f"output_profile: {domain_cfg.get('output_profile')!r}."
+        )
+    return precision
 
 
 def _rechunk(ds, chunks=None):
@@ -146,13 +188,17 @@ def _to_zarr(ds, store_path, mode=None, append_dim=None, zarr_format=2, encoding
     ds.to_zarr(str(store_path), **kwargs)
 
 
-def _build_encoding(ds, zarr_format, compression_level):
+def _build_encoding(ds, zarr_format, compression_level, precision="float32"):
     """
     Build an explicit, reproducible on-disk encoding for the store's first write.
 
     - Data variables: float32 with a zstd Blosc compressor (zarr v2) and a NaN
       fill value, so the layout is fully specified rather than relying on
       library defaults.
+    - With ``precision='int16'``, the variables GLIDE gave a range for are
+      written as int16 with CF scale_factor/add_offset and **no** fill value
+      instead (see :func:`extract_um_met.glide.quantisation_encoding`). Anything
+      without a range — the stresses, and every coordinate — stays as above.
     - Time coordinate: pinned CF units/calendar.
 
     Compression is only set for zarr v2 (numcodecs Blosc objects); for v3 the
@@ -172,7 +218,9 @@ def _build_encoding(ds, zarr_format, compression_level):
     encoding = {}
     for v in ds.data_vars:
         enc = {}
-        if np.issubdtype(ds[v].dtype, np.floating):
+        if precision == "int16" and v in glide.QUANT_RANGES:
+            enc.update(glide.quantisation_encoding(v))
+        elif np.issubdtype(ds[v].dtype, np.floating):
             enc["dtype"] = "float32"
             enc["_FillValue"] = np.float32(np.nan)
         if compressor is not None:
@@ -187,6 +235,26 @@ def _build_encoding(ds, zarr_format, compression_level):
         }
 
     return encoding
+
+
+@contextlib.contextmanager
+def _quiet_missing_fill_value_warning():
+    """
+    Silence xarray's ``_FillValue`` warning for the int16 writes.
+
+    Omitting ``_FillValue`` is deliberate (see
+    :func:`extract_um_met.glide.quantisation_encoding`) and the period is checked
+    for finiteness before it is written, so the warning is noise that would
+    otherwise appear once per variable per append and read as a problem. The
+    filter matches only that message, so nothing else is hidden.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*integer dtype without any _FillValue.*",
+            category=xr.SerializationWarning,
+        )
+        yield
 
 
 def _check_store_levels(ds, store_path):
@@ -240,7 +308,8 @@ def _check_store_wind_regrid(ds, store_path):
 
 
 def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
-                               chunks=None, compression_level=None):
+                               chunks=None, compression_level=None,
+                               precision="float32"):
     """
     Append a monthly dataset to a yearly zarr store.
 
@@ -264,27 +333,40 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
         zstd level, from :func:`resolve_compression_level`. Defaults to
         :data:`_COMPRESSION_LEVEL`. Like ``chunks``, only meaningful on the
         first write.
+    precision : str, optional
+        ``'float32'`` (default) or ``'int16'``, from :func:`resolve_precision`.
+        The encoding it selects is only set on the first write, but the range
+        check it triggers runs on **every** write: each appended period is
+        encoded through the store's fixed encoding, so one that drifts out of
+        range would wrap silently.
 
     Returns
     -------
     str
         Path to the updated zarr store.
     """
+    if precision == "int16":
+        glide.check_quantisation_range(month_ds)
+
     ds = _rechunk(month_ds, chunks)
 
-    if first:
-        encoding = _build_encoding(ds, zarr_format,
-                                   compression_level or _COMPRESSION_LEVEL)
-        _to_zarr(ds, store_path, mode="w", zarr_format=zarr_format, encoding=encoding)
-    else:
-        _check_store_levels(ds, store_path)
-        _check_store_wind_regrid(ds, store_path)
-        _to_zarr(ds, store_path, append_dim="time")
+    with _quiet_missing_fill_value_warning():
+        if first:
+            encoding = _build_encoding(ds, zarr_format,
+                                       compression_level or _COMPRESSION_LEVEL,
+                                       precision)
+            _to_zarr(ds, store_path, mode="w", zarr_format=zarr_format,
+                     encoding=encoding)
+        else:
+            _check_store_levels(ds, store_path)
+            _check_store_wind_regrid(ds, store_path)
+            _to_zarr(ds, store_path, append_dim="time")
 
     return str(store_path)
 
 
-def finalize_attrs(store_path, extra_attrs=None, chunks=None, compression_level=None):
+def finalize_attrs(store_path, extra_attrs=None, chunks=None, compression_level=None,
+                   precision="float32", output_profile=None):
     """
     Write provenance/completeness attributes onto a yearly zarr store.
 
@@ -305,6 +387,12 @@ def finalize_attrs(store_path, extra_attrs=None, chunks=None, compression_level=
     compression_level : int, optional
         The zstd level the store was written with, recorded as
         ``zarr_compression``. Defaults to :data:`_COMPRESSION_LEVEL`.
+    precision : str, optional
+        The precision the store was written with, recorded as
+        ``zarr_precision``.
+    output_profile : str, optional
+        The domain's ``output_profile``, recorded under that name when it has
+        one, so a store says on its own face which consumer it was built for.
 
     Returns
     -------
@@ -330,15 +418,25 @@ def finalize_attrs(store_path, extra_attrs=None, chunks=None, compression_level=
         "time_start": str(times[0]),
         "time_end": str(times[-1]),
         "zarr_chunks": str(chunks or _ZARR_CHUNKS),
+        # Data variables only: the coordinates are small and are left to
+        # xarray/zarr's own default compressor.
         "zarr_compression": (
             f"blosc(cname=zstd, clevel={compression_level or _COMPRESSION_LEVEL}, "
-            f"shuffle=SHUFFLE)"
+            f"shuffle=SHUFFLE) on the data variables"
+        ),
+        "zarr_precision": (
+            "int16 with CF scale_factor/add_offset over the ranges in each "
+            "variable's own attributes; no _FillValue, so the store is validated "
+            "as finite before every write"
+            if precision == "int16" else "float32"
         ),
         "months_present": months_present,
         "n_months_present": len(months_present),
         "missing_months": missing_months,
         "year_complete": not missing_months,
     }
+    if output_profile:
+        attrs["output_profile"] = output_profile
     if extra_attrs:
         attrs.update(extra_attrs)
 

@@ -521,6 +521,49 @@ def get_source(name, cfg=None):
     return replace(src, **changes)
 
 
+def drop_source_vars(source, names):
+    """
+    Return ``source`` with ``names`` filtered out of its four variable groups.
+
+    The two instantaneous groups hold ``(name, want_levels)`` pairs and the two
+    averaged groups hold bare names, so each is filtered on its own shape. A name
+    that matches nothing is left alone rather than raising: a ``data_types:``
+    override may legitimately have dropped it already.
+    """
+    if not names:
+        return source
+
+    drop = set(names)
+    return replace(
+        source,
+        mass_vars=tuple(v for v in source.mass_vars if v[0] not in drop),
+        wind_vars=tuple(v for v in source.wind_vars if v[0] not in drop),
+        averaged_mass_vars=tuple(
+            n for n in source.averaged_mass_vars if n not in drop
+        ),
+        averaged_staggered_vars=tuple(
+            n for n in source.averaged_staggered_vars if n not in drop
+        ),
+    )
+
+
+def get_domain_source(domain_cfg, cfg):
+    """
+    The source a domain reads, with the domain's ``drop_vars:`` applied.
+
+    Dropping at the source descriptor means the cubes are never loaded, never
+    staged to scratch and never joined, so the saving lands on runtime and
+    scratch as well as on the store. Every entry point that builds a source for a
+    domain goes through here, so ``extract`` (the per-region workers) and ``run``
+    cannot end up dropping different variables.
+
+    Unlike the ``data_types:`` variable-group overrides, which are shared by every
+    domain reading the same archive, ``drop_vars`` is per domain.
+    """
+    source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
+    return drop_source_vars(source, domain_cfg.get("drop_vars", ()))
+
+
 def list_sources():
     """Return the names of all registered built-in sources."""
     return sorted(SOURCES)

@@ -24,7 +24,8 @@ import numpy as np
 import xarray as xr
 import yaml
 
-from .config import Config, load_config, resolve_config_value, store_stem
+from .config import (Config, load_config, resolve_config_value,
+                     resolve_max_level_m, store_stem)
 from .iris_io import get_Mk, load_iris, remove_coord_callback
 from .regions import get_saved_region_bounds
 from .grid import extract_native_grid, save_native_grid, build_target_grid
@@ -32,9 +33,10 @@ from .topog import extract_topog
 from .extract import extract_region, extract_single
 from .join import join_month, cleanup_region_intermediates
 from .periods import period_chunks, period_tag, resolve_intermediate_period
-from .sources import get_source
+from .sources import get_domain_source, get_source
 from .zarr_io import (append_month_to_year_store, finalize_attrs,
-                      resolve_compression_level, resolve_output_chunks)
+                      resolve_compression_level, resolve_output_chunks,
+                      resolve_precision)
 
 
 # One sample timestep per Mk, for make-native-grid. The native grid is fixed
@@ -445,7 +447,8 @@ def _read_present_days(store_path, year):
 
 def _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
                    zarr_format, periods, zarr_dir, args, source, suffix=None,
-                   output_chunks=None, compression_level=None):
+                   output_chunks=None, compression_level=None,
+                   precision="float32"):
     """
     Run the extract → append path for a non-tiled single-file source (e.g. NZCSM).
 
@@ -503,11 +506,14 @@ def _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
             first = fresh and i == 0
             append_month_to_year_store(day_ds, store_path, zarr_format=zarr_format,
                                        first=first, chunks=output_chunks,
-                                       compression_level=compression_level)
+                                       compression_level=compression_level,
+                                       precision=precision)
             print(f"  appended {day_key} (first={first})")
 
         finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode, "data_type": source.name},
-                       chunks=output_chunks, compression_level=compression_level)
+                       chunks=output_chunks, compression_level=compression_level,
+                       precision=precision,
+                       output_profile=domain_cfg.get("output_profile"))
         print(f"    finalized store attributes for {year}")
         written_stores.append(store_path)
 
@@ -522,7 +528,8 @@ def _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
 
 def _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
                     zarr_format, ymd, zarr_dir, args, source, suffix=None,
-                    output_chunks=None, compression_level=None):
+                    output_chunks=None, compression_level=None,
+                    precision="float32"):
     """
     Run the full extract → join → write path for a single day.
 
@@ -569,14 +576,17 @@ def _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
         source=source, suffix=suffix,
     )
     append_month_to_year_store(day_ds, store_path, zarr_format=zarr_format, first=True,
-                               chunks=output_chunks, compression_level=compression_level)
+                               chunks=output_chunks, compression_level=compression_level,
+                               precision=precision)
     print(f"    wrote {tag} to {store_path}")
 
     if not args.keep_intermediates:
         cleanup_region_intermediates(domain_name, tag, scratch_dir, suffix=suffix)
 
     finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode, "single_day": tag},
-                   chunks=output_chunks, compression_level=compression_level)
+                   chunks=output_chunks, compression_level=compression_level,
+                   precision=precision,
+                   output_profile=domain_cfg.get("output_profile"))
     print("    finalized store attributes.")
     print("\nDone (single-day smoke test).")
     print(f"Saved to:\n  {store_path}")
@@ -600,15 +610,18 @@ def cmd_run(args):
         cfg.data["domains"][domain_key] = domain_cfg
     grid_mode = domain_cfg.get("grid", {}).get("mode", "footprint")
 
-    # Resolved up front so a bad output_chunks/compression_level/
-    # intermediate_period fails before any extraction runs.
+    # Resolved up front so a bad output_chunks/compression_level/max_level_m/
+    # intermediate_period fails before any extraction runs. An output_profile has
+    # already filled in its defaults, in Config.get_domain.
     output_chunks = resolve_output_chunks(domain_cfg)
-    compression_level = resolve_compression_level(cfg)
+    compression_level = resolve_compression_level(cfg, domain_cfg)
+    precision = resolve_precision(domain_cfg)
+    max_level_m = resolve_max_level_m(domain_cfg)
     intermediate_period = resolve_intermediate_period(domain_cfg)
 
     zarr_format = args.zarr_format if args.zarr_format is not None else cfg.get("zarr_format", 2)
 
-    source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
+    source = get_domain_source(domain_cfg, cfg)
 
     periods = _parse_date_arg(args.date)
 
@@ -618,24 +631,32 @@ def cmd_run(args):
         sys.exit(1)
 
     suffix_note = f"  |  suffix: {suffix}" if suffix else ""
+    profile = domain_cfg.get("output_profile")
+    profile_note = f"  |  output profile: {profile}" if profile else ""
+    ceiling_note = f"  |  max_level_m: {max_level_m:g}" if max_level_m else ""
+    drop_vars = domain_cfg.get("drop_vars")
+    drop_note = f"  |  not extracting: {list(drop_vars)}" if drop_vars else ""
     print(f"Domain: {domain_name} ({domain_key})  |  data type: {source.name}  |  "
-          f"grid mode: {grid_mode}  |  zarr v{zarr_format}{suffix_note}")
+          f"grid mode: {grid_mode}  |  zarr v{zarr_format}{suffix_note}{profile_note}")
     print(f"Output chunks: {output_chunks}  |  intermediate period: {intermediate_period}"
-          f"  |  zstd level: {compression_level}")
+          f"  |  zstd level: {compression_level}  |  precision: {precision}"
+          f"{ceiling_note}{drop_note}")
 
     # Non-tiled sources (e.g. NZCSM): single file per timestep, no join; extract
     # and append a day at a time.
     if not source.tiled:
         _run_non_tiled(cfg, domain_key, domain_cfg, domain_name, grid_mode,
                        zarr_format, periods, zarr_dir, args, source, suffix=suffix,
-                       output_chunks=output_chunks, compression_level=compression_level)
+                       output_chunks=output_chunks, compression_level=compression_level,
+                       precision=precision)
         return
 
     # Single-day smoke test: write a separate debug store, no resume/append.
     if len(periods) == 1 and periods[0][2] is not None:
         _run_single_day(cfg, domain_key, domain_cfg, domain_name, grid_mode,
                         zarr_format, periods[0], zarr_dir, args, source, suffix=suffix,
-                        output_chunks=output_chunks, compression_level=compression_level)
+                        output_chunks=output_chunks, compression_level=compression_level,
+                        precision=precision)
         return
 
     # Group requested months by year (one yearly store each).
@@ -705,7 +726,9 @@ def cmd_run(args):
             if not args.dry_run:
                 finalize_attrs(store_path, extra_attrs={"grid_mode": grid_mode},
                                chunks=output_chunks,
-                               compression_level=compression_level)
+                               compression_level=compression_level,
+                               precision=precision,
+                               output_profile=domain_cfg.get("output_profile"))
                 written_stores.append(store_path)
             continue
 
@@ -735,7 +758,8 @@ def cmd_run(args):
             first = fresh and i == 0
             append_month_to_year_store(period_ds, store_path, zarr_format=zarr_format,
                                        first=first, chunks=output_chunks,
-                                       compression_level=compression_level)
+                                       compression_level=compression_level,
+                                       precision=precision)
             print(f"  appended {tag} to store (first={first})")
 
             if not args.keep_intermediates:
@@ -750,6 +774,8 @@ def cmd_run(args):
             },
             chunks=output_chunks,
             compression_level=compression_level,
+            precision=precision,
+            output_profile=domain_cfg.get("output_profile"),
         )
         print(f"    finalized store attributes for {year}")
         written_stores.append(store_path)
@@ -819,7 +845,7 @@ def cmd_extract(args):
     month = int(date_str[4:6])
     day = int(date_str[6:8]) if len(date_str) == 8 else None
 
-    source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
+    source = get_domain_source(domain_cfg, cfg)
 
     # Non-tiled sources (e.g. NZCSM): one file over the whole domain, no regions.
     if not source.tiled:
@@ -854,6 +880,7 @@ def cmd_extract(args):
     mk_label = f"Mk{mk}" if mk is not None else source.name
     print(f"Extracting {domain_cfg['domain_name']} {year}-{month:02d}{day_str} "
           f"({source.name}, {mk_label}, {scope}, regions {regions})")
+    print(f"  loading: {source.load_vars()}")
 
     for days in chunks:
         for region_id in regions:

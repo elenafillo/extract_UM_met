@@ -28,7 +28,7 @@ from .config import (
 )
 from .metadata import apply_cf_metadata
 from .periods import month_days, period_tag
-from .sources import get_source
+from .sources import get_domain_source
 from .regions import (
     build_domain_grid,
     drop_duplicate_coords,
@@ -265,7 +265,7 @@ def join_month(
     
 
     if source is None:
-        source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
+        source = get_domain_source(domain_cfg, cfg)
     mk = source.get_mk(year, month_int)
     wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
 

@@ -8,6 +8,8 @@ resolving configuration values with string templating.
 import os
 import yaml
 
+from .glide import resolve_output_profile
+
 
 def load_config():
     """
@@ -184,6 +186,12 @@ class Config:
         """
         Get the configuration for a single domain.
 
+        An ``output_profile:`` is resolved here — its defaults filled in under
+        the domain's own keys — rather than in the CLI, because
+        ``extract_region``, ``extract_single`` and ``join_month`` each call this
+        themselves. Resolving it anywhere else would leave the per-region
+        workers reading an unmerged config.
+
         Parameters
         ----------
         domain_key : str
@@ -192,14 +200,14 @@ class Config:
         Returns
         -------
         dict
-            The domain configuration dict.
+            The domain configuration dict, with any profile defaults merged in.
 
         Raises
         ------
         KeyError
             If the domain is not found.
         """
-        return self.data['domains'][domain_key]
+        return resolve_output_profile(self.data['domains'][domain_key])
 
     def resolve_domain_name(self, name_or_key):
         """

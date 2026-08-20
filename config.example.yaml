@@ -123,6 +123,37 @@ default_edge_size: [100, 100]
 # {time: 1, levels: 3, lat: -1, lon: -1}, which suits scattered single-timestep
 # reads. Raise `time` if you mostly read long time series at a few points.
 #
+# `output_profile` fills in the settings one consumer needs, so they don't have to
+# be copied domain by domain. The only profile today is `glide`, which sets
+# `output_chunks` (their tiled read pattern), `compression_level: 5`,
+# `max_level_m: 12000`, `precision: int16` and
+# `drop_vars: [air_pressure, air_pressure_at_sea_level]`.
+# It is a set of defaults, not a lock: any of those keys set on the domain itself
+# wins, so take the profile and still choose your own ceiling. `max_level_m` is
+# the one worth overriding — it should track the alt_max_m of the run the store
+# serves. Omit `output_profile` entirely for the NAME product; it changes nothing
+# unless a domain asks for it. Like chunking and compression, these are fixed when
+# a store is created, so an existing year needs --overwrite to pick up a change.
+#
+# `precision` is `float32` (the default) or `int16`. `int16` stores the variables
+# GLIDE published a range for with CF scale_factor/add_offset — about half the
+# size, for round-trip errors well below what the physics resolves (0.006 m s-1 on
+# the winds, 0.003 K, 1.2 Pa). The fields without a published range, the two
+# surface stresses, stay float32. It is only accepted with
+# `output_profile: glide`, because the ranges cover their field set and nothing
+# else: on another domain the store would come out part int16, part float32, with
+# nothing recording which. There is deliberately no `_FillValue`, so an
+# int16 store must be finite: every period is checked for finiteness and for
+# staying inside its range before it is written, and the write is refused
+# otherwise — out-of-range values *wrap* rather than clip under CF scale/offset,
+# which would corrupt the store silently.
+#
+# `drop_vars` names variables never to extract at all. They are dropped from the
+# source's variable groups before anything is loaded, so the saving lands on
+# runtime and scratch as well as on the store. Unlike the `data_types:` variable
+# overrides above — shared by every domain reading the same archive — this is per
+# domain.
+#
 # `intermediate_period` sets how much time one scratch intermediate covers:
 # month (the default), week (7-day blocks within the month: 1-7, 8-14, 15-21,
 # 22-28, 29-end), or day. Extraction holds one period of one region in memory at
@@ -224,6 +255,24 @@ domains:
       levels: -1
       lat: 96
       lon: 96
+
+  # A domain built for the GLIDE consumer rather than for NAME. `output_profile`
+  # fills in the settings their reader needs (see the block above `domains:`);
+  # everything else is EUROPE's block verbatim, so the two stores differ only in
+  # how they are written.
+  EUROPE_GLIDE:
+    domain_name: "EUROPE_GLIDE"
+    world_regions_codes: [2, 5, 6, 9]
+    intermediate_period: week
+    output_profile: glide
+    # Set this to the alt_max_m of the GLIDE run this store serves — the profile's
+    # 12000 is only a sensible starting point, not a property of their reader.
+    # max_level_m: 15000
+    grid:
+      mode: native
+      lat_bounds: [10.0, 79.5]
+      lon_bounds: [-98.0, 39.0]
+      native_grid: majority
 
   # To extract an existing domain on a different grid, don't define a second
   # domain here — run it with `--grid-mode native --suffix native` so the variant
