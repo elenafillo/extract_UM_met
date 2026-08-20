@@ -20,10 +20,11 @@ extract_UM_met/                    # ← the repo
 │   ├── config.py               # config loading, {user} templating, Config accessor
 │   ├── sources.py              # MetSource data-type descriptors + registry
 │   ├── periods.py              # split a month into intermediate-file periods
-│   ├── iris_io.py              # reading .pp/.pp.gz with iris; Mk calendar
+│   ├── iris_io.py              # reading .pp/.pp.gz with iris; Mk calendar; cube selection
 │   ├── regions.py              # world-14 region bounds & domain-grid trimming
 │   ├── grid.py                 # build target grid (footprint/regular/native); native-grid I/O
 │   ├── rotated.py              # rotated-pole regridding + wind rotation (UM1p5km, NZCSM)
+│   ├── staggering.py           # vertical de-staggering of u/v onto the theta levels
 │   ├── extract.py              # per-region + single-file extraction
 │   ├── join.py                 # stitch regions → domain dataset for one period
 │   ├── topog.py                # static orography ancillary (`extract-topog`)
@@ -94,7 +95,11 @@ workflow is `python -m extract_um_met`.
   `load_files()` is the source-agnostic loader: decompresses `.pp.gz` into
   scratch (reusing what's already there), reads `.pp` directly, skips known-bad
   files. `delete_iris()` cleans up unzipped scratch; `remove_coord_callback`
-  strips the `um_version` attr on load.
+  strips the `um_version` attr on load. Also the cube-selection helpers the
+  pipeline shares: `_pick()` (by name + level presence) and
+  `_theta_ladder_cube()` (the mass cube whose `level_height` is the theta
+  ladder) — here rather than in `extract.py` so `staggering.py` can use them
+  without an import cycle.
 - {src}`regions.py <extract_um_met/regions.py>` — the `world14` scheme:
   `get_saved_region_bounds()` (the 14 region boxes), `find_overlapping_regions()`
   (which regions a bbox needs), `build_domain_grid()` (trim the global 3×4
@@ -110,6 +115,17 @@ workflow is `python -m extract_um_met`.
   rotated→regular with iris, and rotates grid-relative wind/stress vectors to
   true north (`rotate_winds_true_north`) before regridding. Records rotated-pole
   provenance (`rotated_pole_attrs`).
+- {src}`staggering.py <extract_um_met/staggering.py>` — the **vertical** half of
+  aligning the winds, which `rotated.py`/`extract.py` only ever did
+  horizontally. The UM is Charney–Phillips staggered: u/v sit on rho levels, the
+  midpoints of the theta levels everything else is on.
+  `destagger_winds_onto_theta()` moves them with a 2-point weighted mean of the
+  bracketing rho levels, returning the cubes **and** the level selection with the
+  now-unproducible top level removed; `rho_ladder()` / `rho_ladder_attrs()`
+  capture the winds' native ladder for the store attributes, in both modes.
+  Weights come from the cubes' own `level_height`, so no ladder is hardcoded.
+  Selected per domain by `wind_vertical_regrid` — see
+  [reference §2](reference.md#wind-levels-wind_vertical_regrid).
 
 ### The pipeline steps
 
@@ -117,7 +133,9 @@ workflow is `python -m extract_um_met`.
   `extract_region()` extracts one world region of a tiled source;
   `extract_single()` extracts a whole-domain single-file source (no regions).
   Both: pick cubes **by name + level presence** (`_pick`, so a changed archive
-  raises instead of mis-selecting), align staggered winds onto the mass grid,
+  raises instead of mis-selecting), align staggered winds onto the mass grid
+  horizontally (and vertically too, if the domain sets
+  `wind_vertical_regrid: interpolate` — see `staggering.py`),
   keep 1-in-3 model levels, re-stamp 3-hour time-mean fields to the interval end
   (`_restamp_to_interval_end`), build a real `time` dim, regrid onto the target
   (or pass through in native mode), and slice to bounds. `extract_region` always
@@ -210,6 +228,7 @@ Variations handled in `cli.py`:
 | Add a **grid mode** | extend `build_target_grid` and add a `_build_*_grid` in {src}`grid.py <extract_um_met/grid.py>` |
 | Change **which variables** are kept | `config.yaml → data_types:` (no code) — or the `*_vars` defaults on the `MetSource` in {src}`sources.py <extract_um_met/sources.py>` |
 | Change **level subsampling** | `level_stride` / `model_levels` in `config.yaml → data_types:` (no code) — defaults on the `MetSource` |
+| Change **where u/v sit vertically** | `wind_vertical_regrid` on the domain in `config.yaml` (no code) — logic in {src}`staggering.py <extract_um_met/staggering.py>`, see [reference §2](reference.md#wind-levels-wind_vertical_regrid) |
 | Change a store's **output chunking** | `output_chunks` on the domain in `config.yaml` (no code) — default `_ZARR_CHUNKS` in {src}`zarr_io.py <extract_um_met/zarr_io.py>` |
 | Change **peak memory** of a run | `intermediate_period` on the domain in `config.yaml` (no code) — logic in {src}`periods.py <extract_um_met/periods.py>` |
 | Add a **region scheme** (e.g. the UK-16 tiles) | implement it in `_REGION_SCHEMES` ({src}`sources.py <extract_um_met/sources.py>`) + {src}`regions.py <extract_um_met/regions.py>` |

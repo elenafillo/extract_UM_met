@@ -26,8 +26,8 @@ Units are whatever the archive carries, passed through by iris unchanged.
 | `specific_humidity` | kg kg-1 | yes | instantaneous, mass grid |
 | `surface_air_pressure` | Pa | no | instantaneous, mass grid |
 | `upward_air_velocity` | m s-1 | yes | instantaneous, mass grid |
-| `x_wind` | m s-1 | yes | staggered → interpolated onto the mass grid |
-| `y_wind` | m s-1 | yes | staggered → interpolated onto the mass grid |
+| `x_wind` | m s-1 | yes | staggered → interpolated onto the mass grid **horizontally**; vertically see [`wind_vertical_regrid`](#wind-levels-wind_vertical_regrid) |
+| `y_wind` | m s-1 | yes | staggered → interpolated onto the mass grid **horizontally**; vertically see [`wind_vertical_regrid`](#wind-levels-wind_vertical_regrid) |
 | `surface_upward_sensible_heat_flux` | W m-2 | no | 3-hour mean, re-stamped to interval end |
 | `atmosphere_downward_eastward_stress` | Pa | no | 3-hour mean, re-stamped to interval end |
 | `atmosphere_downward_northward_stress` | Pa | no | 3-hour mean, re-stamped to interval end |
@@ -65,7 +65,10 @@ are omitted rather than written blank:
 `Conventions` · `title` · `institution` · `source` · `references` · `history` ·
 `comment` · `author` · `grid_mode` · `mk_version` · `data_type` ·
 `delta_lat` / `delta_lon` (mean grid spacing) · `max_level_m` (only if the domain
-sets a ceiling, see [§2](#capping-by-height-max_level_m))
+sets a ceiling, see [§2](#capping-by-height-max_level_m)) ·
+`wind_vertical_regrid` · `wind_level_height_rho` / `wind_sigma_rho` (the winds'
+native rho ladder for the levels the store holds — see
+[§2](#wind-levels-wind_vertical_regrid))
 
 Provenance and completeness attributes, written by `zarr_io.finalize_attrs`
 after each year:
@@ -141,6 +144,78 @@ names the ceiling in the `levels` `long_name`.
 > A mid-year Mk change whose `level_height` ladder moved would resolve the same
 > ceiling to a different level count. The append refuses rather than mixing two
 > vertical grids in one store; rebuild the year with `--overwrite`.
+
+### Wind levels: `wind_vertical_regrid`
+
+The UM is staggered **Charney–Phillips** in the vertical. u and v live on *rho*
+levels; temperature, humidity, vertical velocity and pressure live on *theta*
+levels, and the rho levels sit at the arithmetic midpoints between them:
+
+| model level | u/v (rho) | everything else (theta) |
+| --- | --- | --- |
+| 1 | 10.000 m | 20.000 m |
+| 2 | 36.664 m | 53.336 m |
+| 3 | 76.664 m | 100.000 m |
+
+Extraction moves the winds onto the mass grid **horizontally**. What happens in
+the vertical is per **domain**, beside `max_level_m`:
+
+```yaml
+domains:
+  EUROPE:
+    wind_vertical_regrid: snap        # snap (default) | interpolate
+```
+
+| value | u/v values | `level_height` describes | levels |
+| --- | --- | --- | --- |
+| `snap` (default) | untouched, still on rho | the **mass** fields | unchanged |
+| `interpolate` | moved onto the theta levels | every variable, u/v included | top model level dropped |
+
+**`snap` is not neutral, and this is the thing to understand.** The winds keep
+their rho values, but the rho `level_height`/`sigma` they arrived with are
+replaced by the theta values at the same level index — the combine keeps the
+mass fields' ladder. So the store hands you the 10 m wind labelled as the 20 m
+wind. Measured on EUROPE 2023-12-01T00:00 that is a **+0.33 m s⁻¹ (+6.3%)** low
+bias in level-1 wind speed, +0.24 (+3.9%) at level 2: systematic, not noise, and
+signed so the surface layer looks under-ventilated. It is the default only
+because it is what every existing store was built with.
+
+`interpolate` fixes it with a 2-point weighted mean of the bracketing rho levels:
+
+```
+w[j]       = (lh_rho[j+1] - lh_theta[j]) / (lh_rho[j+1] - lh_rho[j])
+u_theta[j] = w[j]*u_rho[j] + (1 - w[j])*u_rho[j+1]
+```
+
+The weights are a **static 1-D vector — no terrain, no time**. Because the rho
+levels are exact midpoints in *both* `level_height` and `sigma`, the
+terrain-following height `z = level_height + sigma·orog` is a midpoint for any
+orography. On L59, w[1] = 0.625 and w[2] = 0.583. They are read from the cubes'
+own coordinates, so this is correct across Mk6–12 without a table.
+
+Whichever mode you pick, the winds' native rho ladder is recorded as the store
+attributes `wind_level_height_rho` / `wind_sigma_rho`, for the levels the store
+actually holds. Under `snap` they tell you where u/v really are; under
+`interpolate` they tell you where u/v came from, which with the weights above
+makes the operation invertible. They are plain lists of floats — no new
+coordinate, so the store schema is identical either way.
+
+Three things to watch:
+
+- **`interpolate` drops the source's topmost model level.** rho 59 sits *below*
+  theta 59, so the top theta level has no bracketing rho level above it. Rather
+  than leave one level quietly un-de-staggered, it comes off **every** variable,
+  or the store would be ragged. With `model_levels: "all"` that is 59 → 58; with
+  `level_stride: 3` (topping out at 57) nothing changes; a `max_level_m` ceiling
+  never reaches it.
+- **Switching mode invalidates the store.** A snapped and a de-staggered field
+  are identical in shape, coordinates and dtype, so nothing downstream can tell
+  them apart. The join refuses stale region intermediates built in the other
+  mode, and the append refuses a month that disagrees with the store — but an
+  existing year has to be rebuilt with `--overwrite`, not appended to.
+- **UM global archive only.** The limited-area path (NZCSM) does not implement
+  the de-stagger, and **raises** if a domain asks for `interpolate` rather than
+  silently ignoring it.
 
 Cube names must match the archive's iris names exactly — pick them from the
 [inventory in §3](#3-raw-um-variable-inventory). Any variable group may be set to

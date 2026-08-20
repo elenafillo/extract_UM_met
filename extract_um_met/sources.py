@@ -91,7 +91,7 @@ _REGION_SCHEMES = {
 
 # ---------------------------------------------------------------------------
 # Variable groups: which cubes to extract and how each is gridded. Selected by
-# (name, want_levels) — see extract_um_met.extract._pick. The defaults suit the UM
+# (name, want_levels) — see extract_um_met.iris_io._pick. The defaults suit the UM
 # 'I' set; sources override where cube names differ.
 #   mass_vars              — already on the mass grid (instantaneous)
 #   wind_vars              — staggered instantaneous winds (u, v); interp/rotate to mass
@@ -462,7 +462,7 @@ def get_source(name, cfg=None):
     entries; the averaged groups take bare cube names. Any group may be set empty
     to drop it. Cube names must match the archive's iris cube names exactly, and
     ``want_levels`` must reflect whether the cube carries model levels — a
-    mismatch fails loudly at extraction (see ``extract_um_met.extract._pick``).
+    mismatch fails loudly at extraction (see ``extract_um_met.iris_io._pick``).
 
     ``model_levels`` may be given as an explicit list of model levels to load
     (1-based, ≤ ``n_levels``), or the string ``"all"`` for every level the source

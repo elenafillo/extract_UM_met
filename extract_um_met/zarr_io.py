@@ -214,6 +214,31 @@ def _check_store_levels(ds, store_path):
         )
 
 
+def _check_store_wind_regrid(ds, store_path):
+    """
+    Confirm an incoming period's wind treatment matches the store it joins.
+
+    A year is appended month by month, so flipping ``wind_vertical_regrid``
+    partway would put two different definitions of u/v on one time axis. Unlike
+    a level change this has no shape to give it away — the two are identical in
+    shape, coordinates and dtype — so without this the store would carry a
+    silent discontinuity at whichever month the config changed.
+
+    Periods and stores written before the option existed carry no attribute and
+    are snapped, so the default keeps an in-flight append working.
+    """
+    with xr.open_zarr(store_path, consolidated=True) as existing:
+        store_mode = existing.attrs.get("wind_vertical_regrid", "snap")
+    mode = ds.attrs.get("wind_vertical_regrid", "snap")
+    if mode != store_mode:
+        raise ValueError(
+            f"cannot append: this period was built with wind_vertical_regrid="
+            f"{mode!r} but {store_path} holds {store_mode!r}. The wind treatment "
+            f"changed mid-store, which would leave u/v meaning two different "
+            f"things on one time axis. Rebuild the year with --overwrite."
+        )
+
+
 def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
                                chunks=None, compression_level=None):
     """
@@ -253,6 +278,7 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
         _to_zarr(ds, store_path, mode="w", zarr_format=zarr_format, encoding=encoding)
     else:
         _check_store_levels(ds, store_path)
+        _check_store_wind_regrid(ds, store_path)
         _to_zarr(ds, store_path, append_dim="time")
 
     return str(store_path)

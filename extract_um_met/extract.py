@@ -20,8 +20,15 @@ import numpy as np
 import xarray as xr
 import dask
 
-from .config import Config, resolve_config_value, resolve_max_level_m, store_stem
-from .iris_io import load_files, delete_iris
+from .config import (
+    Config,
+    resolve_config_value,
+    resolve_max_level_m,
+    resolve_wind_vertical_regrid,
+    store_stem,
+)
+from .iris_io import load_files, delete_iris, _pick, _theta_ladder_cube
+from .staggering import destagger_winds_onto_theta, rho_ladder, rho_ladder_attrs
 from .grid import build_target_grid
 from .periods import month_days, period_tag
 from .sources import get_source
@@ -41,52 +48,6 @@ from .rotated import (
 # forecast run; we re-stamp them to the interval END to align with the
 # instantaneous fields (see _restamp_to_interval_end, which also describes the
 # window in the fields' `averaging*` attributes).
-
-
-def _has_levels(cube):
-    """True if the cube carries a model_level_number coordinate."""
-    return "model_level_number" in {co.name() for co in cube.coords()}
-
-
-def _pick(cubes, name, want_levels):
-    """
-    Select the single cube matching ``name`` and level-dimension presence.
-
-    Selecting by name + level presence (rather than positional index) makes the
-    variable choice explicit and fails loudly if the archive's cube set changes,
-    instead of silently returning the wrong array.
-
-    Raises
-    ------
-    ValueError
-        If zero or more than one cube matches.
-    """
-    matches = [c for c in cubes if c.name() == name and _has_levels(c) == want_levels]
-    if len(matches) != 1:
-        available = [(c.name(), _has_levels(c)) for c in cubes]
-        raise ValueError(
-            f"expected exactly 1 cube for name={name!r} want_levels={want_levels}, "
-            f"found {len(matches)}. Loaded cubes (name, has_levels): {available}"
-        )
-    return matches[0]
-
-
-def _theta_ladder_cube(cube, source):
-    """
-    The first leveled mass cube — the theta ladder a height ceiling resolves against.
-
-    Must be a mass field: u/v sit on rho levels, which are the midpoints between
-    the theta levels, so the same ceiling resolved against a wind cube selects a
-    different set of level numbers.
-    """
-    name = next((n for n, want_levels in source.mass_vars if want_levels), None)
-    if name is None:
-        raise ValueError(
-            f"max_level_m needs a model-level mass field to read level_height from, "
-            f"but no mass_vars entry for source {source.name!r} carries model levels "
-            f"(mass_vars={source.mass_vars})."
-        )
-    return _pick(cube, name, True)
 
 
 def _apply_max_level(levels, mass_cube, max_level_m):
@@ -459,6 +420,7 @@ def extract_region(
     mk = source.get_mk(year, month_int)
     levels = source.levels()
     max_level_m = resolve_max_level_m(domain_cfg)
+    wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
 
     # Resolve the target grid if not provided.
     if target is None:
@@ -496,12 +458,33 @@ def extract_region(
         cube = load_files(files, source.load_vars(), scratch_root + os.sep)
         log(f"region {region_id} loaded in {(datetime.datetime.now() - t0).total_seconds():.1f}s")
 
+        # Read before the de-stagger, which replaces the wind cubes' vertical
+        # coordinates with the theta ladder: afterwards there is nothing left on
+        # the cubes to say where u/v actually came from.
+        rho_levels = rho_ladder(cube, source)
+
+        # Must come before the level subsample below — theta level k is built
+        # from rho k and k+1, so a strided selection has already thrown the
+        # neighbour away. Ordering against the ceiling is free (both are filters
+        # over `levels`); this runs first only to keep the cube work together.
+        if wind_regrid == "interpolate":
+            cube, levels = destagger_winds_onto_theta(cube, source, levels)
+            log("winds de-staggered vertically onto the theta (mass) levels; "
+                f"top model level dropped, {len(levels)} levels remain")
+
         # The ceiling needs the Mk's level_height ladder, so it can only resolve
         # once a cube is loaded — and before the level selection is used below.
         if max_level_m is not None:
             levels = _apply_max_level(levels, _theta_ladder_cube(cube, source), max_level_m)
             log(f"max_level_m={max_level_m:g}: keeping {len(levels)} levels "
                 f"(top level {levels[-1]}, which brackets the ceiling)")
+
+        # `levels` is final here and nowhere earlier, so this is the only point
+        # at which the rho ladder can be recorded index-for-index with it.
+        wind_attrs = {
+            "wind_vertical_regrid": wind_regrid,
+            **rho_ladder_attrs(rho_levels, levels),
+        }
 
         # --- Instantaneous group: mass-grid variables + staggered winds -------
         # Cubes are selected by name + level presence (see _pick) so a changed
@@ -628,6 +611,11 @@ def extract_region(
             )
 
         result = _normalize_region_shape(all_variables).sortby("time")
+        # Ride on the intermediate so the join can reach them: a snapped and a
+        # de-staggered region are identical in shape, coords and dtype, so this
+        # is the only thing that distinguishes them. Stamped before the `save`
+        # branch so an unsaved caller gets them too.
+        result.attrs.update(wind_attrs)
         log(f"region {region_id} extracted; dims {dict(result.sizes)}")
 
         if not save:
@@ -727,6 +715,18 @@ def extract_single(
 
     levels = source.levels()
     max_level_m = resolve_max_level_m(domain_cfg)
+    # The vertical de-stagger is implemented for the UM global archive only. This
+    # is the limited-area path, so honouring the key here would mean silently
+    # ignoring it — and a snapped field is indistinguishable from a de-staggered
+    # one downstream (same shape, coordinates and dtype). Fail at config
+    # resolution instead, before anything is read.
+    wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
+    if wind_regrid == "interpolate":
+        raise ValueError(
+            f"domain {domain_name!r} sets wind_vertical_regrid: interpolate, but "
+            f"source {source.name!r} is extracted by the non-tiled path, where the "
+            f"vertical de-stagger is not implemented. Use 'snap' for this domain."
+        )
     if target is None:
         target_lat, target_lon, _ = build_target_grid(domain_cfg, cfg)
     else:
@@ -830,7 +830,7 @@ def extract_single(
         all_variables = apply_cf_metadata(
             all_variables, cfg, mk=source.get_mk(year, month), grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=True, source_name=source.name,
-            max_level_m=max_level_m,
+            max_level_m=max_level_m, wind_vertical_regrid=wind_regrid,
         )
         all_variables.attrs.update(pole_attrs)
 

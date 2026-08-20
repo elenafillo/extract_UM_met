@@ -127,6 +127,35 @@ def resolve_max_level_m(domain_cfg):
     return ceiling
 
 
+def resolve_wind_vertical_regrid(domain_cfg):
+    """
+    How a domain treats the winds' vertical staggering: ``"snap"`` or ``"interpolate"``.
+
+    ``snap`` is the default and is today's behaviour exactly — u/v keep their rho
+    values on the theta-labelled level index — so existing stores stay
+    bit-identical and the correction is opt-in. ``interpolate`` moves them onto
+    the theta levels (see :mod:`extract_um_met.staggering`), which drops the top
+    model level and makes the store incompatible with one built the other way.
+
+    Per domain, beside ``max_level_m``: the ``data_types:`` block is shared by
+    every domain reading the same archive, so a per-source key could never let a
+    de-staggered GLIDE domain and a snapped NAME domain coexist.
+
+    Raises on an unrecognised value rather than falling back to the default. The
+    two modes produce fields of identical shape, coordinates and dtype, so a typo
+    that quietly reverted to ``snap`` would leave nothing downstream to notice.
+    """
+    modes = ("snap", "interpolate")
+    mode = domain_cfg.get("wind_vertical_regrid")
+    if mode is None:
+        return "snap"
+    if mode not in modes:
+        raise ValueError(
+            f"domain wind_vertical_regrid must be one of {list(modes)}, got {mode!r}"
+        )
+    return mode
+
+
 class Config:
     """
     Light accessor for configuration values.
