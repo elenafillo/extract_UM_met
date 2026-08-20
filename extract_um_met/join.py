@@ -19,7 +19,13 @@ import numpy as np
 import xarray as xr
 import dask
 
-from .config import Config, resolve_config_value, resolve_max_level_m, store_stem
+from .config import (
+    Config,
+    resolve_config_value,
+    resolve_max_level_m,
+    resolve_wind_vertical_regrid,
+    store_stem,
+)
 from .metadata import apply_cf_metadata
 from .periods import month_days, period_tag
 from .sources import get_source
@@ -158,6 +164,31 @@ def _check_region_levels(ds, region_id, file_path, reference):
     return reference
 
 
+def _check_region_wind_regrid(ds, region_id, file_path, expected):
+    """
+    Confirm a region intermediate's winds were built in the mode now configured.
+
+    Checked against the resolved config rather than against the sibling regions,
+    because the store's ``wind_vertical_regrid`` attribute is written from that
+    config: a run reusing intermediates built under the other mode would
+    otherwise produce a store whose prose contradicts its own winds. Nothing
+    else would notice — a snapped and a de-staggered field have identical shape,
+    coordinates and dtype. ``_check_region_levels`` catches only the part of
+    this where the level counts differ, which a strided selection's do not —
+    ``interpolate`` trims nothing from a selection topping out below the ladder.
+
+    Intermediates written before the option existed carry no attribute and are
+    snapped, which is exactly what the default here asserts.
+    """
+    found = ds.attrs.get("wind_vertical_regrid", "snap")
+    if found != expected:
+        raise ValueError(
+            f"region {region_id} intermediate was built with "
+            f"wind_vertical_regrid={found!r}, but the domain is now configured for "
+            f"{expected!r}. Delete the stale intermediates and re-extract — {file_path}"
+        )
+
+
 def join_month(
     domain_key,
     year,
@@ -236,6 +267,7 @@ def join_month(
     if source is None:
         source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
     mk = source.get_mk(year, month_int)
+    wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
 
     # Resolve the target grid once for the whole period.
     if target is None:
@@ -300,6 +332,7 @@ def join_month(
                 region_levels = _check_region_levels(
                     region_ds, region_id, file_path, region_levels
                 )
+                _check_region_wind_regrid(region_ds, region_id, file_path, wind_regrid)
                 lat_datasets.append(region_ds)
 
             log(f"Merging column {column} along latitude")
@@ -357,6 +390,7 @@ def join_month(
             met, cfg, mk=mk, grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=use_interp,
             source_name=source.name, max_level_m=resolve_max_level_m(domain_cfg),
+            wind_vertical_regrid=wind_regrid,
         )
 
         log(f"{date_tag} dataset ready: {dict(met.sizes)} "

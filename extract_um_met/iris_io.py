@@ -34,6 +34,53 @@ def remove_coord_callback(cube, field, filename):
         cube.attributes.pop("um_version")
 
 
+def _has_levels(cube):
+    """True if the cube carries a model_level_number coordinate."""
+    return "model_level_number" in {co.name() for co in cube.coords()}
+
+
+def _pick(cubes, name, want_levels):
+    """
+    Select the single cube matching ``name`` and level-dimension presence.
+
+    Selecting by name + level presence (rather than positional index) makes the
+    variable choice explicit and fails loudly if the archive's cube set changes,
+    instead of silently returning the wrong array.
+
+    Raises
+    ------
+    ValueError
+        If zero or more than one cube matches.
+    """
+    matches = [c for c in cubes if c.name() == name and _has_levels(c) == want_levels]
+    if len(matches) != 1:
+        available = [(c.name(), _has_levels(c)) for c in cubes]
+        raise ValueError(
+            f"expected exactly 1 cube for name={name!r} want_levels={want_levels}, "
+            f"found {len(matches)}. Loaded cubes (name, has_levels): {available}"
+        )
+    return matches[0]
+
+
+def _theta_ladder_cube(cube, source):
+    """
+    The first leveled mass cube — the theta ladder the vertical grid is read from.
+
+    Must be a mass field: u/v sit on rho levels, which are the midpoints between
+    the theta levels, so a height ceiling resolved against a wind cube selects a
+    different set of level numbers, and a de-stagger read from one would pair the
+    ladder with itself.
+    """
+    name = next((n for n, want_levels in source.mass_vars if want_levels), None)
+    if name is None:
+        raise ValueError(
+            f"a model-level mass field is needed to read level_height from, "
+            f"but no mass_vars entry for source {source.name!r} carries model levels "
+            f"(mass_vars={source.mass_vars})."
+        )
+    return _pick(cube, name, True)
+
+
 def get_Mk(year, month):
     """
     Determine the UM Mk version for a given year/month.

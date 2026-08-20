@@ -195,6 +195,22 @@ domains:
     # itself. Per domain, and composes with the source's level_stride /
     # model_levels. On the L59 global ladder, 12000 keeps 42 levels.
     # max_level_m: 12000
+    # How u/v are treated in the vertical. The UM staggers them Charney-Phillips:
+    # the winds live on rho levels, which sit at the midpoints of the theta levels
+    # everything else is on.
+    #   snap        (default) leave them there. u/v keep their rho values while
+    #               carrying the theta level_height of the same level index, so
+    #               level_height overstates their height — the L59 ladder labels
+    #               the 10 m wind as 20 m, a +6% low bias in level-1 speed.
+    #   interpolate move them onto the theta levels by a 2-point weighted mean of
+    #               the bracketing rho levels, so level_height applies to u/v too.
+    #               Drops the source's topmost model level (nothing above it to
+    #               interpolate from) and so rebuilds the whole store — an
+    #               interpolated year will not concatenate with a snapped one.
+    # Either way the winds' native rho ladder is recorded in the store attributes
+    # wind_level_height_rho / wind_sigma_rho. UM global archive only: the
+    # limited-area path raises rather than ignore an interpolate setting.
+    # wind_vertical_regrid: interpolate
     grid:
       mode: native
       lat_bounds: [10.0, 79.5]

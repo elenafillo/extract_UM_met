@@ -54,28 +54,31 @@ CF_COORD_ATTRS = {
 _FILL_ONLY = {"forecast_period", "forecast_reference_time"}
 
 
-def _levels_description(levels, max_level_m=None):
+def _levels_description(levels, max_level_m=None, wind_vertical_regrid="snap"):
     """
     Describe a level selection from the level numbers themselves.
 
     Which levels are kept is configurable (``level_stride``, ``model_levels``,
-    ``max_level_m``), so reading the coordinate is the only way this description
-    stays true to what the store actually holds.
+    ``max_level_m``, ``wind_vertical_regrid``), so reading the coordinate is the
+    only way this description stays true to what the store actually holds.
 
-    A ceiling has to be named explicitly: capped levels are still 1..n and would
-    otherwise be described as "all n model levels", which is the mislabelling
-    this function exists to prevent.
+    Anything that trims the top of the ladder has to suppress the word "all":
+    those levels are still numbered 1..n and would otherwise be described as
+    "all n model levels", which is the mislabelling this function exists to
+    prevent. A ceiling does that, and so does ``interpolate``, which cannot keep
+    the source's topmost model level — there is no rho level above it to
+    de-stagger from. A subsampled selection never claimed "all" in the first
+    place, so it needs no adjusting.
     """
     n = len(levels)
-    contiguous = levels == list(range(1, n + 1))
-    if max_level_m is None:
-        if contiguous:
-            return f"all {n} model levels"
-        return f"{n} model levels subsampled from 1-{levels[-1]}"
-    capped = f"capped at {max_level_m:g} m (the top level brackets the ceiling)"
-    if contiguous:
-        return f"the lowest {n} model levels, {capped}"
-    return f"{n} model levels subsampled from 1-{levels[-1]}, {capped}"
+    if levels == list(range(1, n + 1)):
+        whole = max_level_m is None and wind_vertical_regrid == "snap"
+        described = f"all {n} model levels" if whole else f"the lowest {n} model levels"
+    else:
+        described = f"{n} model levels subsampled from 1-{levels[-1]}"
+    if max_level_m is not None:
+        described += f", capped at {max_level_m:g} m (the top level brackets the ceiling)"
+    return described
 
 
 def _clean(mapping):
@@ -91,7 +94,7 @@ def _clean(mapping):
 
 
 def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=True,
-                      source_name=None, max_level_m=None):
+                      source_name=None, max_level_m=None, wind_vertical_regrid="snap"):
     """
     Stamp CF coordinate and global attributes onto a monthly/period dataset.
 
@@ -120,6 +123,16 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         The domain's level ceiling in metres, if it has one. Recorded as an
         attribute and named in the level description, which would otherwise
         describe a capped 1..n selection as every level the source has.
+    wind_vertical_regrid : str
+        ``'snap'`` (default) or ``'interpolate'`` — see
+        :func:`extract_um_met.config.resolve_wind_vertical_regrid`. Recorded as
+        an attribute so a store can never be ambiguous about which it is, and
+        branches the comment: the two produce fields of identical shape,
+        coordinates and dtype, so the prose is all a reader has to go on. The
+        companion ``wind_level_height_rho`` / ``wind_sigma_rho`` attributes are
+        not passed here — they are stamped onto the region intermediates by
+        ``extract.extract_region``, where the cubes' own ladder is still
+        readable, and survive the join's concats into ``ds.attrs`` untouched.
 
     Returns
     -------
@@ -137,7 +150,7 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
             ds[name].attrs = {**existing, **attrs}   # CF attrs win
 
     levels_description = _levels_description(
-        [int(v) for v in ds["levels"].values], max_level_m
+        [int(v) for v in ds["levels"].values], max_level_m, wind_vertical_regrid
     )
     ds["levels"].attrs["long_name"] = f"UM model level number: {levels_description}"
 
@@ -155,15 +168,32 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
     else:
         source = md.get("source") or (f"{source_name} met archive" if source_name else "met archive")
 
-    # "horizontally" is load-bearing: u/v are interpolated onto the mass grid in
-    # the horizontal only and stay on their native rho levels, while the mass
-    # fields are on theta levels. Consumers have read the old wording as a claim
-    # that the winds had also been de-staggered vertically.
-    auto_comment = (
-        "winds interpolated horizontally onto the mass/pressure grid (horizontal "
-        "only: u/v remain on rho levels, no vertical de-staggering); retained "
-        f"{levels_description}; grid_mode={grid_mode}"
-    )
+    # The 'snap' wording has to say two things, because saying only the first is
+    # what misled consumers before: u/v were never moved vertically, *and* the
+    # rho level_height/sigma they arrived with were replaced by the theta values
+    # at the same level index (combine_by_coords(compat="override") keeps the
+    # mass fields' ladder). So the coordinate describes the mass fields and
+    # overstates the height of the winds underneath it. 'interpolate' is the case
+    # where level_height genuinely does apply to u/v, so the two must not share a
+    # sentence.
+    if wind_vertical_regrid == "interpolate":
+        wind_note = (
+            "winds interpolated horizontally onto the mass/pressure grid and "
+            "de-staggered vertically onto the theta (mass) levels by a 2-point "
+            "weighted mean of the bracketing rho levels, so level_height applies "
+            "to u/v as well; the source's topmost model level is absent, having "
+            "no rho level above it to de-stagger from"
+        )
+    else:
+        wind_note = (
+            "winds interpolated horizontally onto the mass/pressure grid, in the "
+            "horizontal only: u/v keep their native rho-level values, but the rho "
+            "level_height/sigma they came with have been replaced by the theta "
+            "values at the same level index, so level_height describes the mass "
+            "fields and overstates the height of u/v — their true heights are in "
+            "wind_level_height_rho"
+        )
+    auto_comment = f"{wind_note}; retained {levels_description}; grid_mode={grid_mode}"
     if not use_interp:
         auto_comment += "; fields kept on the native UM grid (no spatial interpolation)"
     user_comment = (md.get("comment") or "").strip()
@@ -182,6 +212,7 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         "comment": comment,
         "author": cfg.get("met_extract_author", ""),
         "grid_mode": grid_mode,
+        "wind_vertical_regrid": wind_vertical_regrid,
     }
     if mk is not None:
         attrs["mk_version"] = int(mk)
