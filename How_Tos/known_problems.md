@@ -81,6 +81,119 @@ arrives from `DataArray.from_iris` named `dim_0` and survives the stack as a
 leftover level. Mk10 cubes do not have it. `dim_0` is now listed in `_DROP_VARIABLES` in `join.py`, so no new store gets
 one.
 
+The anonymous dimension has a cause, and it is the entry below: pre-Mk10 the
+averaged cubes carry eight *distinct* `(forecast_period, forecast_reference_time)`
+pairs rather than a 2 × 4 grid, so iris cannot merge them onto a named dimension.
+
+### Before Mk10 the archive holds a flux window on only half the steps
+
+*Found 2026-08-20, from the raw `.pp` files. Fixed the same day. Every store
+built before the fix for a period up to **2017-06-30** is affected, silently —
+the three time-averaged fields only.*
+
+Up to Mk9 the flux and stress fields **interleave genuine 3-hour means with
+zero-length `T+0` records**. Per day, per averaged field, eight records:
+
+```
+00:00  bounds [00:00, 00:00]   width 0 h   fp 0.0    <- T+0 analysis record
+01:30  bounds [00:00, 03:00]   width 3 h   fp 4.5    <- genuine 3-hour mean
+06:00  bounds [06:00, 06:00]   width 0 h   fp 0.0
+07:30  bounds [06:00, 09:00]   width 3 h   fp 4.5
+   … degenerate on 00/06/12/18, real windows ending 03/09/15/21
+```
+
+So there are only **four real windows a day, six hours apart**. The windows
+between them — `[03,06]`, `[09,12]`, `[15,18]`, `[21,24]` — are **not in the
+archive at all**; the 06:00 file holds exactly one flux field and it is the
+degenerate one.
+
+Two things make it hard to spot. The `T+0` records hold **real, plausible
+values** (sensible heat flux `-324.9 / 3.25 / 216.9` min/mean/max against
+`-236.8 / 3.11 / 194.6` for the mean beside it), and **`cell_methods` is
+identical on both** — `mean over time, interval: 1 hour`. The **width of the time
+bounds is the only discriminator.**
+
+Verified across the whole archive, region PT2, all three averaged fields on
+Mk6/8/9/10 and the heat flux on Mk7/11/12:
+
+| Mk | day | widths (h) | zero-width | `forecast_period` | real windows/day | end spacing |
+| -- | --- | ---------- | ---------- | ----------------- | ---------------- | ----------- |
+| 6  | 20100120 | `[0, 3]` | 4/8 | `0, 4.5` | 4 | 6 h |
+| 7  | 20130411 | `[0, 3]` | 4/8 | `0, 4.5` | 4 | 6 h |
+| 8  | 20150505 | `[0, 3]` | 4/8 | `0, 4.5` | 4 | 6 h |
+| 8  | 20150824 | `[0, 3]` | 4/8 | `0, 4.5` | 4 | 6 h |
+| 9  | 20170710 | `[0, 3]` | 4/8 | `0, 4.5` | 4 | 6 h |
+| 10 | 20210505 | `[3]` | 0/8 | `-1.5, 1.5` | 8 | 3 h |
+| 11 | 20220401 | `[3]` | 0/8 | `-1.5, 1.5` | 8 | 3 h |
+| 12 | 20251201 | `[3]` | 0/8 | `-1.5, 1.5` | 8 | 3 h |
+
+**The break is exactly 2017-07-01**, the Mk9 → Mk10 boundary in
+`iris_io.get_Mk`, so the affected span is everything up to 2017-06-30 — most of
+the historical archive. The `forecast_period` change from `{0, 4.5}` to
+`{-1.5, +1.5}` is the archive-side signature: from Mk10 each analysis carries the
+window before it *and* the window after it, on the same four analyses the
+instantaneous fields use.
+
+**The instantaneous fields are unaffected** and identical across generations
+(`fp {0, 3}` × analyses 00/06/12/18, eight steps). Only
+`atmosphere_downward_eastward_stress`, `atmosphere_downward_northward_stress` and
+`surface_upward_sensible_heat_flux` differ.
+
+#### What it did to the stores
+
+`snap` moves a bounded time point to its interval end, and a zero-width record's
+end *is* its own timestamp. So the averaged fields came out on a full eight-step
+axis, matching the instantaneous fields, and looked entirely healthy — while
+**alternating an instantaneous `T+0` flux with a 3-hour mean from step to step**,
+with nothing in the store recording which is which. Anything integrating or
+averaging those fields over a pre-July-2017 period is working on half real means
+and half instantaneous snapshots.
+
+**Is the store I already have affected?** If it covers any year up to 2017, has
+no `time_flux` coordinate, and its `flux_time_regrid` attribute is absent or
+`snap`, then yes, for those three variables. There is no in-place repair —
+rebuild the year with `--overwrite`.
+
+#### The fix
+
+Two parts, both automatic; no config change makes a pre-Mk10 store correct or
+incorrect.
+
+- **The degenerate records are dropped at read time.**
+  `extract._drop_degenerate_windows` filters every zero-width record before
+  anything measures or re-stamps a window, in all three `flux_time_regrid` modes.
+  It is a no-op from Mk10. Without it the "2 different averaging windows" guard in
+  `_averaging_attrs` also fires, because the surviving widths genuinely disagree.
+- **A year containing any pre-Mk10 month is forced to `keep`.**
+  `config.resolve_flux_time_regrid` returns `keep` below
+  `MK_REGULAR_FLUX_WINDOWS = 10` whatever the domain asks for, since `snap` and
+  `interpolate` both put one flux value on every instantaneous step and that
+  archive has a window for only half of them. It resolves against
+  `sources.MetSource.min_mk_in_year`, **not** the month in hand: Mk boundaries
+  fall on month edges, so per-month resolution would put the averaged fields on
+  `time_flux` for Jan–Jun 2017 and on `time` for Jul–Dec and append both into one
+  store. **All of 2017 is therefore `keep`**, July onward included.
+
+The override is logged, and the store's `flux_time_regrid` attribute records what
+was *done*, not what was asked — so it is visible rather than silent. It does not
+raise: the cadence is a property of the archive, not of the config, and the same
+domain block is correct for 2016 and 2022, so raising would make any multi-year
+run impossible to express.
+
+A fixed pre-Mk10 day comes out `time = 8`, `time_flux = 4`, with `time_flux` at
+`01:30, 07:30, 13:30, 19:30` — the four real midpoints in the `.pp` files, and
+nothing invented. Note **`time` stays 8**: `keep` merges the fluxes onto a
+differently *named* dimension, which is a union rather than a join, so the
+instantaneous fields keep all eight steps. Under `snap` the same day would inner-
+join four flux ends against eight instantaneous steps and halve the store.
+
+Two consequences to carry: any consumer requiring a single time coordinate
+(GLIDE's `met_schema.md` does) **cannot be served a pre-2018 store** as it
+stands; and a derived quantity built from the stresses — `friction_velocity` —
+inherits `time_flux` there while its other inputs sit on `time`, which an xarray
+expression will broadcast into a `(time, time_flux)` outer product rather than
+refuse.
+
 ### The 2014-02-01 15:00 dump carries the previous stamp's data time
 
 Every field in the `MO201402011500` files has a validity time (`t1`) of 15:00 but
@@ -102,9 +215,12 @@ the 12:00 and 18:00 stamps either side are clean. That includes the region-8
 file re-archived on 2020-06-27; the later archive date changes nothing, it
 carries the same `t2`.
 
-The pipeline already absorbs this. `_restamp_to_interval_end` moves a bounded
-time point to its interval end, which here is exactly 15:00, putting the averaged
-fields back on the shared axis.
+The pipeline already absorbs this. Under `snap`, `_stamp_averaged_time` moves a
+bounded time point to its interval end, which here is exactly 15:00, putting the
+averaged fields back on the shared axis. 2014 is pre-Mk10, so the mode is now
+forced to `keep` (above) and they instead stay at 13:30 on `time_flux` — the
+genuine midpoint of the `[12:00, 15:00]` window, and one of the four midpoints
+that era has every day. Either way the day needs no special handling.
 
 ---
 

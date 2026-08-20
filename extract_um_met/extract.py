@@ -31,7 +31,7 @@ from .config import (
 from .iris_io import load_files, delete_iris, _pick, _theta_ladder_cube
 from .staggering import destagger_winds_onto_theta, rho_ladder, rho_ladder_attrs
 from .grid import build_target_grid
-from .periods import month_days, period_tag
+from .periods import month_days, period_tag, next_day
 from .sources import get_domain_source
 from .metadata import (
     FLUX_TIME_DIM,
@@ -109,8 +109,10 @@ def _averaging_prose(mode, hours):
             f"value is centred on its timestamp instead of being {hours / 2:g} h late. "
             f"It is therefore no longer the mean of any one window but a weighted mean "
             f"of the two windows either side, and no longer conserves the integral. "
-            f"The last timestamp of each extracted period is extrapolated, its "
-            f"bracketing window lying in the next period. {sampling}"
+            f"Every value is bracketed by two real windows — the last timestamp of a "
+            f"period is bracketed by the first analysis of the next, read for that "
+            f"window alone — and nothing is extrapolated. Where the archive has no "
+            f"such analysis the timestamp is dropped rather than invented. {sampling}"
         )
     return (
         f"{hours:g}-hour time-mean over [{FLUX_TIME_DIM} - {hours / 2:g} h, "
@@ -250,18 +252,65 @@ def _recentre_onto_interval_ends(da):
     used rather than that shortcut so a period with a gap in it is still weighted
     by the real spacing.
 
-    The last end of a period lies half a window past its last midpoint and the
-    bracketing value is in the next period, which is extracted separately — hence
-    the extrapolation, over half a window, at one timestamp per period per field.
-    The alternative is a NaN or a missing step at every period boundary.
+    The last end of a period lies half a window past its last midpoint, so the
+    value bracketing it belongs to the next period. That one is supplied by the
+    buffer analysis :func:`_buffer_files` loads; nothing is extrapolated here, and
+    an end left unbracketed comes out NaN rather than invented. Where no buffer
+    exists the period's final step is dropped whole in
+    :func:`_trim_buffer_from_period`, so no NaN reaches the store either.
 
     Runs after :func:`_build_time_axis` (which needs a real 1-D time dimension to
     interpolate along) and after ``.load()`` (``interp`` needs the interpolation
     dim in one chunk).
     """
     ends = da["time"].values + _half_window(da)
-    interpolated = da.interp(time=ends, kwargs={"fill_value": "extrapolate"})
-    return interpolated.astype(da.dtype).assign_attrs(da.attrs)
+    return da.interp(time=ends).astype(da.dtype).assign_attrs(da.attrs)
+
+
+def _buffer_files(source, days, region_id, mk):
+    """
+    The one analysis that brackets a period's last interval end, for ``interpolate``.
+
+    Interpolating onto an interval end needs a window midpoint either side of it.
+    Every end but the last has both inside the period; the last sits half a window
+    past the period's final midpoint, so its upper bracket is the first analysis of
+    the *following* day — for a month-long period, the next month's.
+
+    Only that 00:00 analysis is globbed, never the whole day: the record wanted is
+    its ``forecast_period = -1.5 h`` window, whose midpoint falls on the period's
+    own last day.
+
+    The file is asked for on **this period's Mk**, not the next month's. The
+    archive keeps writing the outgoing Mk for a while past a boundary, so at a
+    boundary the leftover file is the one still on the period's grid — which is the
+    only one usable here, since the time interpolation happens before the regrid
+    onto the target. Where the archive has nothing (its final month, or a boundary
+    with no overlap) this returns an empty list and the caller drops the
+    unbracketed step rather than inventing it.
+    """
+    return source.list_files(f"{next_day(days[-1])}00", region=region_id, mk=mk)
+
+
+def _trim_buffer_from_period(ds, days, buffered):
+    """
+    Cut the buffer analysis's own steps back off the period, after interpolating.
+
+    The buffer is loaded for one flux window and its instantaneous fields come
+    with it; all of them fall on the following day, so everything from that day's
+    midnight onward goes.
+
+    With no buffer available the period's last interval end was never bracketed
+    and :func:`_recentre_onto_interval_ends` left it NaN. That step is dropped
+    whole — every variable, not just the averaged ones, so the store stays
+    rectangular — leaving a period one step short rather than one step invented.
+    """
+    first_dropped = np.datetime64(
+        datetime.datetime.strptime(next_day(days[-1]), "%Y%m%d")
+    )
+    ds = ds.isel(time=(ds["time"].values < first_dropped))
+    if not buffered:
+        ds = ds.isel(time=slice(None, -1))
+    return ds
 
 
 def _merge_onto_flux_time_axis(inst, avg_das):
@@ -579,11 +628,17 @@ def extract_region(
     levels = source.levels()
     max_level_m = resolve_max_level_m(domain_cfg)
     wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
-    flux_regrid = resolve_flux_time_regrid(domain_cfg, mk)
+    # Against the year, not `mk`: the store is yearly and the averaged fields
+    # cannot change axis halfway through it. See min_mk_in_year.
+    year_mk = source.min_mk_in_year(year)
+    flux_regrid = resolve_flux_time_regrid(domain_cfg, year_mk)
     if flux_regrid != domain_cfg.get("flux_time_regrid", "snap"):
-        log(f"Mk{mk} supplies an averaging window on only half the time steps, so "
-            f"flux_time_regrid is {flux_regrid!r} for this period, not "
-            f"{domain_cfg.get('flux_time_regrid', 'snap')!r}")
+        log(f"part of {year} comes from Mk{year_mk}, which supplies an averaging "
+            f"window on only half the time steps, and the averaged fields cannot "
+            f"change axis partway through a store — so flux_time_regrid is "
+            f"{flux_regrid!r} for all of {year}, not "
+            f"{domain_cfg.get('flux_time_regrid', 'snap')!r}. Every other Mk-dependent "
+            f"choice (grid, levels, paths) is still resolved per month, as Mk{mk} here.")
 
     # Resolve the target grid if not provided.
     if target is None:
@@ -618,7 +673,18 @@ def extract_region(
             f for f in source.list_files(month_key, region=region_id, mk=mk)
             if any(fnmatch(f, pattern) for pattern in wanted)
         ]
-        cube = load_files(files, source.load_vars(), scratch_root + os.sep)
+        # `interpolate` needs one analysis past the period to bracket its last
+        # interval end; every other mode reads the period and nothing else.
+        buffer_files = []
+        if flux_regrid == "interpolate":
+            buffer_files = _buffer_files(source, days, region_id, mk)
+            if buffer_files:
+                log(f"buffering the next analysis ({os.path.basename(buffer_files[0])}) "
+                    f"to bracket the period's last interval end")
+            else:
+                log(f"no analysis after {days[-1]} on Mk{mk}, so the period's last "
+                    f"interval end cannot be bracketed; it will be dropped")
+        cube = load_files(files + buffer_files, source.load_vars(), scratch_root + os.sep)
         log(f"region {region_id} loaded in {(datetime.datetime.now() - t0).total_seconds():.1f}s")
 
         # Read before the de-stagger, which replaces the wind cubes' vertical
@@ -698,8 +764,11 @@ def extract_region(
         if cleanup_pp:
             # Safe to delete the unzipped .pp files now the data is in memory.
             # (iris.load is lazy, so this must come after .load(), not before.)
+            # The buffer analysis is unzipped into the same scratch and is not one
+            # of `days`, so it needs clearing with them.
+            staged = (days + [next_day(days[-1])]) if buffer_files else days
             try:
-                for day_key in days:
+                for day_key in staged:
                     delete_iris(scratch_root + os.sep, day_key, region_id)
             except Exception as exc:  # non-fatal; just leaves scratch files behind
                 log(f"could not clean up .pp scratch for region {region_id}: {exc}")
@@ -733,6 +802,14 @@ def extract_region(
         else:
             all_variables = inst
         del inst
+
+        if flux_regrid == "interpolate":
+            n_before = all_variables.sizes["time"]
+            all_variables = _trim_buffer_from_period(
+                all_variables, days, bool(buffer_files)
+            )
+            log(f"trimmed the buffer analysis back off the period "
+                f"({n_before} -> {all_variables.sizes['time']} time step(s))")
 
         # Normalise longitude to [-180, 180].
         all_variables = all_variables.assign_coords(
@@ -906,10 +983,11 @@ def extract_single(
         )
     # flux_time_regrid, by contrast, is arithmetic on the time coordinate alone
     # and has nothing source-specific in it, so all three modes work here — though
-    # the Mk still decides whether the archive can support more than 'keep'.
+    # the year's lowest Mk still decides whether the archive can support more
+    # than 'keep'.
     year = int(str(date)[:4])
     month = int(str(date)[4:6]) if len(str(date)) >= 6 else 1
-    flux_regrid = resolve_flux_time_regrid(domain_cfg, source.get_mk(year, month))
+    flux_regrid = resolve_flux_time_regrid(domain_cfg, source.min_mk_in_year(year))
     if target is None:
         target_lat, target_lon, _ = build_target_grid(domain_cfg, cfg)
     else:
@@ -1006,6 +1084,15 @@ def extract_single(
         else:
             all_variables = inst
         del inst
+
+        if flux_regrid == "interpolate":
+            # No buffer analysis here: `date` may name a single file, a day or a
+            # month, so there is no next period to reach into the way
+            # extract_region does. The last interval end is therefore unbracketed
+            # and NaN, and it goes — one step short beats one step invented.
+            all_variables = all_variables.isel(time=slice(None, -1))
+            log("dropped the final time step: its interval end has no bracketing "
+                "window on this path (see _buffer_files)")
 
         # Finalise to the same zarr-ready schema + CF/ARCO metadata as the tiled
         # join path (rename lat/lon/levels, delta attrs, CF attrs), then add the

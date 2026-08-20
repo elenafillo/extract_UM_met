@@ -14,10 +14,17 @@ they already are.
 """
 
 import calendar
+import datetime
 
 
 # Days per chunk; None means "the whole month, however long it is".
 PERIOD_DAYS = {"month": None, "week": 7, "day": 1}
+
+
+def next_day(day_key):
+    """The ``YYYYMMDD`` key of the day after ``day_key``, crossing month and year."""
+    day = datetime.datetime.strptime(day_key, "%Y%m%d") + datetime.timedelta(days=1)
+    return day.strftime("%Y%m%d")
 
 
 def resolve_intermediate_period(domain_cfg):

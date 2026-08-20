@@ -293,9 +293,11 @@ def join_month(
         source = get_domain_source(domain_cfg, cfg)
     mk = source.get_mk(year, month_int)
     wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
-    # Same mk as extract_region resolves against, so the mode this checks the
-    # intermediates for and writes to the store is the one they were built with.
-    flux_regrid = resolve_flux_time_regrid(domain_cfg, mk)
+    # Resolved against the year, exactly as extract_region does, so the mode this
+    # checks the intermediates for and writes to the store is the one they were
+    # built with. Per-month here would disagree with them for every month of a
+    # year that spans the Mk9/Mk10 boundary.
+    flux_regrid = resolve_flux_time_regrid(domain_cfg, source.min_mk_in_year(year))
 
     # Resolve the target grid once for the whole period.
     if target is None:

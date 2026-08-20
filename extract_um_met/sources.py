@@ -213,6 +213,23 @@ class MetSource:
         """Return the Mk version for a date, or None for Mk-less sources."""
         return _MK_CALENDARS[self.mk_calendar](year, month)
 
+    def min_mk_in_year(self, year):
+        """
+        The lowest Mk any month of ``year`` is read from.
+
+        The store is yearly, so anything that has to hold across the whole store
+        must resolve against the year rather than the month in hand. Mk boundaries
+        fall on month edges, so a year can span two generations — 2017 is Mk9 to
+        June and Mk10 from July — and a key resolved per month would then describe
+        one half of the store and not the other. See
+        :func:`extract_um_met.config.resolve_flux_time_regrid`, which is the one
+        key that cannot vary within a store.
+
+        A Mk-less source is Mk-less all year, so its first month settles it.
+        """
+        mks = [self.get_mk(year, month) for month in range(1, 13)]
+        return None if mks[0] is None else min(mks)
+
     def levels(self):
         """
         Model levels to load.

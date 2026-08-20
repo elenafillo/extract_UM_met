@@ -227,6 +227,15 @@ editing in place. And because stores are appended to per month, changing the
 variable or level selection part-way through a year will not line up with the
 months already written — rebuild that year with `--overwrite`.
 
+> **To document here, in the docs pass — not written yet.** Four per-domain keys
+> exist and are commented in {src}`config.example.yaml` but have no section on
+> this page: `flux_time_regrid` (where the time-averaged fields are timestamped —
+> `snap` / `interpolate` / `keep`; belongs beside `wind_vertical_regrid` above,
+> being the same shape of choice, and must say that any year with a pre-Mk10
+> month is forced to `keep`, see
+> [known problems §2](known_problems.md#before-mk10-the-archive-holds-a-flux-window-on-only-half-the-steps)),
+> `output_profile`, `drop_vars` and `precision`.
+
 ---
 
 ## 3. Raw UM variable inventory

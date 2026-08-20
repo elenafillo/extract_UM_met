@@ -253,12 +253,20 @@ domains:
     #               same steps, so a value is centred on its timestamp. Same axis,
     #               same shape, different numbers — and the result is no longer
     #               the mean of any one window but a weighted mean of the two
-    #               either side, so it stops conserving the integral.
+    #               either side, so it stops conserving the integral. Reads one
+    #               analysis past each period to bracket its last step, so a
+    #               period costs one extra file per region.
     #   keep        leave them at the midpoint on a second time axis, `time_flux`,
-    #               one point per `time` point and half a window earlier. Nothing
-    #               is re-stamped and nothing is interpolated, so it is the only
-    #               lossless option, but the store gains a dimension and a
-    #               consumer has to be able to read it.
+    #               half a window earlier — one point per window the archive
+    #               supplies, which before Mk10 is one every other `time` step,
+    #               not one per step. Nothing is re-stamped and nothing is
+    #               interpolated, so it is the only lossless option, but the store
+    #               gains a dimension and a consumer has to be able to read it.
+    # Before Mk10 (i.e. up to 2017-06-30) the archive holds a real averaging window
+    # on only half the steps, filling the rest with zero-length T+0 records, so
+    # neither snap nor interpolate can be honoured: the mode is forced to `keep`
+    # for those periods whatever is set here. It is logged, and the store's
+    # flux_time_regrid attribute records what was actually done, not what was asked.
     # Either way each field's own `averaging*` attributes say what was done, and
     # averaging_midpoint_offset_hours is 0 exactly when the timestamp is already
     # the validity time — so a consumer can key its own shift off that attribute

@@ -207,10 +207,20 @@ def resolve_flux_time_regrid(domain_cfg, mk=None):
     domain_cfg : dict
         The domain's config block.
     mk : int, optional
-        The Mk generation the period will be read from. Below
-        :data:`MK_REGULAR_FLUX_WINDOWS` the mode is forced to ``keep`` whatever
-        the domain asks for: the other two both put one flux value on every
-        instantaneous step, and that archive has a window for only half of them.
+        The lowest Mk generation the store's **year** is read from, from
+        :meth:`extract_um_met.sources.MetSource.min_mk_in_year` — not the Mk of
+        the month in hand. Below :data:`MK_REGULAR_FLUX_WINDOWS` the mode is
+        forced to ``keep`` whatever the domain asks for: the other two both put
+        one flux value on every instantaneous step, and that archive has a window
+        for only half of them.
+
+        Resolving against the year is what keeps a store self-consistent. Mk
+        boundaries fall on month edges, so 2017 is Mk9 to June and Mk10 from July;
+        resolved per month it would put the averaged fields on ``time_flux`` for
+        the first half of the 2017 store and on ``time`` for the second, which is
+        not a store anyone can read. Whole years are the unit that works, so a
+        year containing any pre-Mk10 month is ``keep`` throughout.
+
         ``None`` (the default, and every Mk-less source) leaves the mode alone.
     """
     modes = ("snap", "interpolate", "keep")
