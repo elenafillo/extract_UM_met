@@ -31,6 +31,12 @@ GLIDE_PROFILE = {
     # the orography, which extract-topog now ships as an ancillary; the MSLP is
     # not in GLIDE's variable set. Their section 2.
     "drop_vars": ["air_pressure", "air_pressure_at_sea_level"],
+    # Deliberately NOT here yet: flux_time_regrid. Their section 6 wants the
+    # fluxes' 1.5 h lag gone, and either 'interpolate' or 'keep' does it, but the
+    # choice is theirs and not ours to default: 'keep' is the lossless one and the
+    # one the physics wants, and their met_schema.md allows a store exactly one
+    # time coordinate, so taking it means relaxing that rule. Until they answer, a
+    # glide domain sets the key itself and gets snap if it does not.
 }
 
 PROFILES = {"glide": GLIDE_PROFILE}

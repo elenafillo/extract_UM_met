@@ -17,6 +17,13 @@ import datetime
 
 CONVENTIONS_DEFAULT = "CF-1.10"
 
+# The second time axis a domain gets under ``flux_time_regrid: keep`` — the
+# time-averaged fields left at their window midpoint, which is when they are
+# actually valid, instead of being moved onto the instantaneous fields' steps.
+# Named for the fields it carries rather than 'time_stress': the sensible heat
+# flux rides it too, and that is a flux and not a stress.
+FLUX_TIME_DIM = "time_flux"
+
 # CF attributes for coordinate variables, applied where the coordinate exists.
 CF_COORD_ATTRS = {
     "lat": {
@@ -34,6 +41,15 @@ CF_COORD_ATTRS = {
     "time": {
         "standard_name": "time",
         "long_name": "time",
+        "axis": "T",
+    },
+    FLUX_TIME_DIM: {
+        "standard_name": "time",
+        "long_name": (
+            "validity time of the time-averaged fields: the midpoint of each "
+            "averaging window the archive supplies, which is not necessarily one "
+            "per step of 'time'"
+        ),
         "axis": "T",
     },
     "levels": {
@@ -94,7 +110,8 @@ def _clean(mapping):
 
 
 def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=True,
-                      source_name=None, max_level_m=None, wind_vertical_regrid="snap"):
+                      source_name=None, max_level_m=None, wind_vertical_regrid="snap",
+                      flux_time_regrid="snap"):
     """
     Stamp CF coordinate and global attributes onto a monthly/period dataset.
 
@@ -133,6 +150,14 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         not passed here — they are stamped onto the region intermediates by
         ``extract.extract_region``, where the cubes' own ladder is still
         readable, and survive the join's concats into ``ds.attrs`` untouched.
+    flux_time_regrid : str
+        ``'snap'`` (default), ``'interpolate'`` or ``'keep'`` — see
+        :func:`extract_um_met.config.resolve_flux_time_regrid`. Recorded for the
+        same reason as ``wind_vertical_regrid``: ``snap`` and ``interpolate``
+        differ only in the averaged fields' values, so nothing about the store's
+        shape says which it is. The per-variable ``averaging*`` attributes say
+        the same thing field by field; this is the store-level statement the
+        append guard reads.
 
     Returns
     -------
@@ -193,7 +218,26 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
             "fields and overstates the height of u/v — their true heights are in "
             "wind_level_height_rho"
         )
-    auto_comment = f"{wind_note}; retained {levels_description}; grid_mode={grid_mode}"
+    # Only worth a sentence when it is not the default: a store saying nothing
+    # about its fluxes is a snapped one, which is what every store said before
+    # the key existed.
+    flux_note = {
+        "snap": "",
+        "interpolate": (
+            "; the time-averaged fields (fluxes/stresses) are interpolated in "
+            "time onto the instantaneous steps, so they are centred on their "
+            "timestamp rather than half a window late, and are no longer the "
+            "mean of any single window"
+        ),
+        "keep": (
+            f"; the time-averaged fields (fluxes/stresses) are on their own "
+            f"{FLUX_TIME_DIM} axis at the midpoint of their averaging window — "
+            f"untouched means stamped at the time they are valid, one point per "
+            f"window the archive supplies"
+        ),
+    }[flux_time_regrid]
+    auto_comment = (f"{wind_note}{flux_note}; retained {levels_description}; "
+                    f"grid_mode={grid_mode}")
     if not use_interp:
         auto_comment += "; fields kept on the native UM grid (no spatial interpolation)"
     user_comment = (md.get("comment") or "").strip()
@@ -213,6 +257,7 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         "author": cfg.get("met_extract_author", ""),
         "grid_mode": grid_mode,
         "wind_vertical_regrid": wind_vertical_regrid,
+        "flux_time_regrid": flux_time_regrid,
     }
     if mk is not None:
         attrs["mk_version"] = int(mk)

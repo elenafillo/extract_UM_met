@@ -158,6 +158,74 @@ def resolve_wind_vertical_regrid(domain_cfg):
     return mode
 
 
+# First Mk whose fluxes are a 3-hour mean at every step. Before it the archive
+# supplies a window on only half the steps and fills the rest with zero-length
+# T+0 records (see How_Tos/known_problems.md), so there is no step-for-step flux
+# series to snap or interpolate onto and only `keep` can describe what is there.
+MK_REGULAR_FLUX_WINDOWS = 10
+
+
+def resolve_flux_time_regrid(domain_cfg, mk=None):
+    """
+    How a domain timestamps the time-averaged fields: ``"snap"``, ``"interpolate"``
+    or ``"keep"``.
+
+    The fluxes and stresses are means over the source's averaging window, which
+    the UM stamps at the window MIDPOINT — half a window (1.5 h for the 3-hourly
+    archive) before the instantaneous step the window closes on.
+
+    ``snap`` is the default and is today's behaviour exactly — the point is moved
+    to the interval end so the averaged fields share one axis with the
+    instantaneous ones — so existing stores stay bit-identical and any correction
+    is opt-in. Read as instantaneous, which is what a dispersion model does, those
+    fields are then half a window late.
+
+    ``interpolate`` interpolates them in time from their midpoints back onto those
+    same interval-end steps, so a field is centred on its timestamp. The axis is
+    unchanged; only the values are. The cost is that the result is no longer the
+    mean of any one window — it is a weighted mean of the two either side — and no
+    longer conserves the integral.
+
+    ``keep`` leaves them at the midpoint, on a second time axis
+    (:data:`extract_um_met.metadata.FLUX_TIME_DIM`) generated from the windows the
+    archive actually supplies. Nothing is re-stamped and nothing is interpolated,
+    so it is the only lossless mode, but it costs a store dimension and a consumer
+    that can read one.
+
+    Per domain, beside ``wind_vertical_regrid``, and for the same reason: the
+    ``data_types:`` block is shared by every domain reading the same archive, so a
+    per-source key could never let a corrected GLIDE domain and a snapped NAME
+    domain coexist.
+
+    Raises on an unrecognised value rather than falling back to the default.
+    ``snap`` and ``interpolate`` produce fields of identical shape, coordinates
+    and dtype, so a typo that quietly reverted to ``snap`` would leave nothing
+    downstream to notice.
+
+    Parameters
+    ----------
+    domain_cfg : dict
+        The domain's config block.
+    mk : int, optional
+        The Mk generation the period will be read from. Below
+        :data:`MK_REGULAR_FLUX_WINDOWS` the mode is forced to ``keep`` whatever
+        the domain asks for: the other two both put one flux value on every
+        instantaneous step, and that archive has a window for only half of them.
+        ``None`` (the default, and every Mk-less source) leaves the mode alone.
+    """
+    modes = ("snap", "interpolate", "keep")
+    mode = domain_cfg.get("flux_time_regrid")
+    if mode is None:
+        mode = "snap"
+    elif mode not in modes:
+        raise ValueError(
+            f"domain flux_time_regrid must be one of {list(modes)}, got {mode!r}"
+        )
+    if mk is not None and mk < MK_REGULAR_FLUX_WINDOWS:
+        return "keep"
+    return mode
+
+
 class Config:
     """
     Light accessor for configuration values.

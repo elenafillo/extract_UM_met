@@ -242,6 +242,28 @@ domains:
     # wind_level_height_rho / wind_sigma_rho. UM global archive only: the
     # limited-area path raises rather than ignore an interpolate setting.
     # wind_vertical_regrid: interpolate
+    # What happens to the time-averaged fields' timestamps. The fluxes and
+    # stresses are means over a window (3 h in the global archive) that the UM
+    # stamps at the window MIDPOINT — half a window before the instantaneous step
+    # the window closes on.
+    #   snap        (default) move the stamp to the interval end so they share the
+    #               instantaneous fields' time axis. Read as instantaneous values,
+    #               which is what a dispersion model does, they are then 1.5 h late.
+    #   interpolate interpolate them in time from the midpoints back onto those
+    #               same steps, so a value is centred on its timestamp. Same axis,
+    #               same shape, different numbers — and the result is no longer
+    #               the mean of any one window but a weighted mean of the two
+    #               either side, so it stops conserving the integral.
+    #   keep        leave them at the midpoint on a second time axis, `time_flux`,
+    #               one point per `time` point and half a window earlier. Nothing
+    #               is re-stamped and nothing is interpolated, so it is the only
+    #               lossless option, but the store gains a dimension and a
+    #               consumer has to be able to read it.
+    # Either way each field's own `averaging*` attributes say what was done, and
+    # averaging_midpoint_offset_hours is 0 exactly when the timestamp is already
+    # the validity time — so a consumer can key its own shift off that attribute
+    # rather than assume one and correct twice.
+    # flux_time_regrid: interpolate
     grid:
       mode: native
       lat_bounds: [10.0, 79.5]
@@ -268,6 +290,10 @@ domains:
     # Set this to the alt_max_m of the GLIDE run this store serves — the profile's
     # 12000 is only a sensible starting point, not a property of their reader.
     # max_level_m: 15000
+    # Not in the glide profile: which one they want is still an open question
+    # (their section 6 asks for the lag gone; `keep` is the lossless answer but
+    # needs their one-time-coordinate rule relaxed). Set it here until they say.
+    # flux_time_regrid: interpolate
     grid:
       mode: native
       lat_bounds: [10.0, 79.5]

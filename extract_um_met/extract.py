@@ -23,6 +23,7 @@ import dask
 from .config import (
     Config,
     resolve_config_value,
+    resolve_flux_time_regrid,
     resolve_max_level_m,
     resolve_wind_vertical_regrid,
     store_stem,
@@ -32,7 +33,12 @@ from .staggering import destagger_winds_onto_theta, rho_ladder, rho_ladder_attrs
 from .grid import build_target_grid
 from .periods import month_days, period_tag
 from .sources import get_domain_source
-from .metadata import to_zarr_schema, add_delta_attrs, apply_cf_metadata
+from .metadata import (
+    FLUX_TIME_DIM,
+    add_delta_attrs,
+    apply_cf_metadata,
+    to_zarr_schema,
+)
 from .rotated import (
     latlon_target_cube,
     latlon_regridder,
@@ -45,9 +51,9 @@ from .rotated import (
 # the MetSource — see extract_um_met.sources. They are selected by (name,
 # want_levels) via _pick. Time-averaged fields (fluxes/stresses) are means over
 # the source's averaging window, stamped at the interval MIDPOINT from a different
-# forecast run; we re-stamp them to the interval END to align with the
-# instantaneous fields (see _restamp_to_interval_end, which also describes the
-# window in the fields' `averaging*` attributes).
+# forecast run; what happens to that stamp is the domain's `flux_time_regrid`
+# (see _stamp_averaged_time, which also describes the window in the fields'
+# `averaging*` attributes).
 
 
 def _apply_max_level(levels, mass_cube, max_level_m):
@@ -76,19 +82,100 @@ def _apply_max_level(levels, mass_cube, max_level_m):
     return below + above[:1]
 
 
-def _averaging_attrs(time_coord):
+def _averaging_prose(mode, hours):
+    """
+    The ``averaging`` attribute's text for one ``flux_time_regrid`` mode.
+
+    The three modes do different things to a field, not different amounts of the
+    same thing, so they get three sentences rather than one with the numbers
+    swapped: under ``snap`` the value is a true mean stamped at the wrong time,
+    under ``interpolate`` it is stamped at the right time but is no longer a mean
+    of anything, and under ``keep`` it is both, at the price of its own axis.
+    """
+    sampling = ("The interval in cell_methods is the UM's sampling interval "
+                "within the window, not the window itself.")
+    if mode == "snap":
+        return (
+            f"{hours:g}-hour time-mean over [timestamp - {hours:g} h, timestamp], "
+            f"stamped at the interval END (re-stamped from the UM's interval-midpoint "
+            f"convention) so it shares the instantaneous fields' time axis. Read as an "
+            f"instantaneous value its validity time is the window midpoint, "
+            f"{hours / 2:g} h before the timestamp. {sampling}"
+        )
+    if mode == "interpolate":
+        return (
+            f"{hours:g}-hour time-mean, linearly interpolated in time from the UM's "
+            f"interval midpoints onto the instantaneous fields' timestamps, so the "
+            f"value is centred on its timestamp instead of being {hours / 2:g} h late. "
+            f"It is therefore no longer the mean of any one window but a weighted mean "
+            f"of the two windows either side, and no longer conserves the integral. "
+            f"The last timestamp of each extracted period is extrapolated, its "
+            f"bracketing window lying in the next period. {sampling}"
+        )
+    return (
+        f"{hours:g}-hour time-mean over [{FLUX_TIME_DIM} - {hours / 2:g} h, "
+        f"{FLUX_TIME_DIM} + {hours / 2:g} h], left untouched on its own "
+        f"{FLUX_TIME_DIM} axis at the window midpoint — the time it is valid. "
+        f"There is one {FLUX_TIME_DIM} point per window the archive supplies, "
+        f"which is not necessarily one per 'time' step: before Mk10 only every "
+        f"other step closes a window. {sampling}"
+    )
+
+
+def _drop_degenerate_windows(cube):
+    """
+    Drop the zero-length "means" the pre-Mk10 archive interleaves with real ones.
+
+    Before Mk10 a day carries eight records for each averaged field but only four
+    windows: the analysis steps (00/06/12/18) hold a T+0 record whose time bounds
+    are zero-width, and the forecast steps (03/09/15/21) hold the genuine 3-hour
+    mean. Both arrive with the same ``cell_methods``, and the T+0 records hold
+    real, plausible values, so the bounds width is the only thing separating a
+    mean from an instantaneous sample. See How_Tos/known_problems.md.
+
+    They have to go before anything measures or re-stamps the window: kept, they
+    make :func:`_averaging_attrs` see two window lengths, and snapping them to
+    their own timestamp is what silently interleaved instantaneous fluxes with
+    means in every pre-Mk10 store built so far.
+
+    From Mk10 every record is a real window and this returns the cube untouched —
+    which is also the only case where ``time`` spans two dimensions, so the
+    indexing below never has to deal with the product grid.
+    """
+    tc = cube.coord("time")
+    bounds = np.sort(tc.bounds.reshape(-1, 2), axis=1)
+    real = bounds[:, 1] > bounds[:, 0]
+    if real.all():
+        return cube
+    (dim,) = cube.coord_dims(tc)
+    index = [slice(None)] * cube.ndim
+    index[dim] = np.flatnonzero(real)
+    return cube[tuple(index)]
+
+
+def _averaging_attrs(time_coord, mode):
     """
     Describe the averaging window of a time-averaged cube, from its time bounds.
 
     Two things a consumer needs and cannot get from ``cell_methods``, whose
     ``interval:`` is the UM's *sampling* interval inside the window rather than
-    the window itself: how long the window is, and where the timestamp sits on
-    it once :func:`_restamp_to_interval_end` has moved it to the interval end.
+    the window itself: how long the window is, and where the timestamp sits on it
+    once ``flux_time_regrid`` has had its way with it.
+    ``averaging_midpoint_offset_hours`` is how far the value's validity time lies
+    from its timestamp, so it is zero in the two modes that put them together —
+    which is the test a consumer should use to decide whether to apply a shift of
+    its own, rather than assuming one.
 
-    ``time`` is still on the (forecast_period, forecast_reference_time) grid here
-    — :func:`_build_time_axis` collapses it later — so ``bounds`` is 3-D and
-    ``bounds[0]`` is a whole row of cells, not one window. Flatten to one row per
-    cell first; measuring the row gave 6 h for a 3-hourly field.
+    From Mk10 ``time`` is still on the (forecast_period, forecast_reference_time)
+    grid here — :func:`_build_time_axis` collapses it later — so ``bounds`` is 3-D
+    and ``bounds[0]`` is a whole row of cells, not one window. Flatten to one row
+    per cell first; measuring the row gave 6 h for a 3-hourly field. Earlier Mks
+    put the averaged fields on a single anonymous dimension instead and the
+    flatten is a no-op.
+
+    Runs after :func:`_drop_degenerate_windows`, so the differing widths this
+    still raises on are genuinely different windows rather than the pre-Mk10
+    archive's zero-length T+0 records.
     """
     bounds = np.sort(time_coord.bounds.reshape(-1, 2), axis=1)
     widths = np.unique(bounds[:, 1] - bounds[:, 0])
@@ -101,38 +188,109 @@ def _averaging_attrs(time_coord):
     to_date = time_coord.units.num2date
     hours = (to_date(bounds[0, 1]) - to_date(bounds[0, 0])).total_seconds() / 3600
     return {
-        "averaging": (
-            f"{hours:g}-hour time-mean over [timestamp - {hours:g} h, timestamp], "
-            f"stamped at the interval END (re-stamped from the UM's interval-midpoint "
-            f"convention) so it shares the instantaneous fields' time axis. Read as an "
-            f"instantaneous value its validity time is the window midpoint, "
-            f"{hours / 2:g} h before the timestamp. The interval in cell_methods is the "
-            f"UM's sampling interval within the window, not the window itself."
-        ),
+        "averaging": _averaging_prose(mode, hours),
         "averaging_period_hours": hours,
-        "averaging_midpoint_offset_hours": -hours / 2,
+        "averaging_midpoint_offset_hours": -hours / 2 if mode == "snap" else 0.0,
     }
 
 
-def _restamp_to_interval_end(cube):
+def _stamp_averaged_time(cube, mode):
     """
-    Re-stamp a time-averaged cube's time onto its interval END, dropping bounds.
+    Stamp a time-averaged cube's time per ``flux_time_regrid``, dropping bounds.
 
-    Averaged fields (fluxes/stresses) are stored at the interval midpoint with
-    time bounds [start, end]; the end equals the instantaneous fields' valid time.
-    Moving the point to the end lets them share one time axis. Modifies and
-    returns the cube, along with the ``averaging*`` attributes describing the
-    window — read off the bounds here, the last point at which they exist.
+    Averaged fields (fluxes/stresses) arrive at the interval midpoint with time
+    bounds [start, end]; the end equals the instantaneous fields' valid time.
+
+    Only ``snap`` moves the point to the end, so the averaged fields can share the
+    instantaneous fields' axis. ``interpolate`` and ``keep`` both stamp the
+    midpoint: for ``interpolate`` that is where the interpolation starts from, and
+    for ``keep`` it is the answer — the field stays there, on its own axis, in
+    :func:`_merge_onto_flux_time_axis`.
+
+    The midpoint is recomputed from the bounds rather than taken from the point
+    the UM supplied, so it is the centre of the window by construction and not by
+    the archive's convention. Modifies and returns the cube, with the
+    ``averaging*`` attributes describing the window — read off the bounds here,
+    the last point at which they exist.
     """
     tc = cube.coord("time")
     averaging = {}
     if tc.has_bounds():
-        averaging = _averaging_attrs(tc)
-        tc.points = tc.bounds.max(axis=-1)   # interval end (robust to bound order)
+        cube = _drop_degenerate_windows(cube)
+        tc = cube.coord("time")
+        averaging = _averaging_attrs(tc, mode)
+        if mode == "snap":
+            tc.points = tc.bounds.max(axis=-1)   # interval end (robust to bound order)
+        else:
+            tc.points = tc.bounds.mean(axis=-1)  # window midpoint = validity time
         tc.bounds = None
     if cube.coords("forecast_period") and cube.coord("forecast_period").has_bounds():
         cube.coord("forecast_period").bounds = None
     return cube, averaging
+
+
+def _half_window(da):
+    """Half a field's averaging window, as a timedelta64, from its own attributes."""
+    hours = da.attrs["averaging_period_hours"]
+    return np.timedelta64(round(hours * 1800), "s")
+
+
+def _recentre_onto_interval_ends(da):
+    """
+    Move an averaged field from its window midpoints onto the interval ends.
+
+    The target timestamps are exactly the ones ``snap`` produces, so the two modes
+    differ in the fields' values and never in the store's time axis — which is
+    what lets ``interpolate`` be a drop-in for a consumer that already reads these
+    stores, and what makes the mode worth recording as an attribute since nothing
+    in the shape betrays it.
+
+    With the windows evenly spaced each interval end sits midway between two
+    midpoints, so this is the mean of the two windows either side; ``interp`` is
+    used rather than that shortcut so a period with a gap in it is still weighted
+    by the real spacing.
+
+    The last end of a period lies half a window past its last midpoint and the
+    bracketing value is in the next period, which is extracted separately — hence
+    the extrapolation, over half a window, at one timestamp per period per field.
+    The alternative is a NaN or a missing step at every period boundary.
+
+    Runs after :func:`_build_time_axis` (which needs a real 1-D time dimension to
+    interpolate along) and after ``.load()`` (``interp`` needs the interpolation
+    dim in one chunk).
+    """
+    ends = da["time"].values + _half_window(da)
+    interpolated = da.interp(time=ends, kwargs={"fill_value": "extrapolate"})
+    return interpolated.astype(da.dtype).assign_attrs(da.attrs)
+
+
+def _merge_onto_flux_time_axis(inst, avg_das):
+    """
+    Merge the averaged fields onto their own ``time_flux`` axis at the midpoints.
+
+    The axis is *generated* from the windows the archive supplies rather than
+    derived from ``time``, which is what lets this mode describe both archive
+    generations. From Mk10 there is a window on every instantaneous step and the
+    two axes come out the same length; before Mk10 there is one on every other
+    step, so ``time_flux`` is half the length of ``time`` and carries the four
+    real midpoints of each day. Deriving it as ``time - half a window`` would
+    invent the four missing ones.
+
+    Merging on a differently-named dimension is a union, not a join, so unlike
+    ``snap`` and ``interpolate`` this cannot drop instantaneous steps: an inner
+    join against a half-length flux axis would take the rest of the store down
+    with it.
+
+    The forecast bookkeeping is not carried across: it is the instantaneous
+    fields' provenance and never described the averaged fields' own runs.
+    """
+    flux = [
+        da.rename({"time": FLUX_TIME_DIM}).drop_vars(
+            ["forecast_period", "forecast_reference_time"], errors="ignore"
+        )
+        for da in avg_das
+    ]
+    return xr.merge([inst, *flux], compat="override")
 
 
 def _build_time_axis(ds, keep_provenance):
@@ -421,6 +579,11 @@ def extract_region(
     levels = source.levels()
     max_level_m = resolve_max_level_m(domain_cfg)
     wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
+    flux_regrid = resolve_flux_time_regrid(domain_cfg, mk)
+    if flux_regrid != domain_cfg.get("flux_time_regrid", "snap"):
+        log(f"Mk{mk} supplies an averaging window on only half the time steps, so "
+            f"flux_time_regrid is {flux_regrid!r} for this period, not "
+            f"{domain_cfg.get('flux_time_regrid', 'snap')!r}")
 
     # Resolve the target grid if not provided.
     if target is None:
@@ -510,16 +673,16 @@ def extract_region(
         inst = xr.combine_by_coords([most_variables, *winds], compat="override")
         del most_variables, winds
 
-        # --- Averaged group: fluxes/stresses, re-stamped to the interval end ---
+        # --- Averaged group: fluxes/stresses, stamped per flux_time_regrid ------
         # These are time-means from a different forecast run, so they can't be
-        # merged with the instantaneous fields until re-stamped onto the shared
-        # valid-time axis (see _restamp_to_interval_end).
+        # merged with the instantaneous fields until stamped onto the shared
+        # valid-time axis (see _stamp_averaged_time).
         avg_arrays = []
         for name in source.averaged_mass_vars:
-            c, averaging = _restamp_to_interval_end(_pick(cube, name, False))
+            c, averaging = _stamp_averaged_time(_pick(cube, name, False), flux_regrid)
             avg_arrays.append(_dataarray_from_iris_safely(c).assign_attrs(averaging))
         for name in source.averaged_staggered_vars:
-            c, averaging = _restamp_to_interval_end(_pick(cube, name, True))
+            c, averaging = _stamp_averaged_time(_pick(cube, name, True), flux_regrid)
             da = _dataarray_from_iris_safely(c).assign_attrs(averaging)
             if "model_level_number" in da.coords:
                 da = da.drop_vars("model_level_number")
@@ -554,9 +717,19 @@ def extract_region(
             for da in avg_arrays:
                 da = _build_time_axis(da, keep_provenance=False)
                 _check_unique_time(da, region_id, tag)
+                if flux_regrid == "interpolate":
+                    da = _recentre_onto_interval_ends(da)
                 avg_das.append(da)
-            all_variables = xr.merge([inst, *avg_das], join="inner", compat="override")
-            log(f"merged {len(avg_das)} time-averaged field(s) onto the valid-time grid")
+            if flux_regrid == "keep":
+                all_variables = _merge_onto_flux_time_axis(inst, avg_das)
+                log(f"{len(avg_das)} time-averaged field(s) on their own "
+                    f"{FLUX_TIME_DIM} axis at the averaging-window midpoint "
+                    f"({all_variables.sizes[FLUX_TIME_DIM]} window(s) against "
+                    f"{all_variables.sizes['time']} time step(s))")
+            else:
+                all_variables = xr.merge([inst, *avg_das], join="inner", compat="override")
+                log(f"merged {len(avg_das)} time-averaged field(s) onto the valid-time "
+                    f"grid (flux_time_regrid={flux_regrid})")
         else:
             all_variables = inst
         del inst
@@ -611,11 +784,15 @@ def extract_region(
             )
 
         result = _normalize_region_shape(all_variables).sortby("time")
+        if FLUX_TIME_DIM in result.dims:
+            result = result.sortby(FLUX_TIME_DIM)
         # Ride on the intermediate so the join can reach them: a snapped and a
         # de-staggered region are identical in shape, coords and dtype, so this
-        # is the only thing that distinguishes them. Stamped before the `save`
-        # branch so an unsaved caller gets them too.
+        # is the only thing that distinguishes them. Same for the flux stamping
+        # under snap/interpolate. Stamped before the `save` branch so an unsaved
+        # caller gets them too.
         result.attrs.update(wind_attrs)
+        result.attrs["flux_time_regrid"] = flux_regrid
         log(f"region {region_id} extracted; dims {dict(result.sizes)}")
 
         if not save:
@@ -727,6 +904,12 @@ def extract_single(
             f"source {source.name!r} is extracted by the non-tiled path, where the "
             f"vertical de-stagger is not implemented. Use 'snap' for this domain."
         )
+    # flux_time_regrid, by contrast, is arithmetic on the time coordinate alone
+    # and has nothing source-specific in it, so all three modes work here — though
+    # the Mk still decides whether the archive can support more than 'keep'.
+    year = int(str(date)[:4])
+    month = int(str(date)[4:6]) if len(str(date)) >= 6 else 1
+    flux_regrid = resolve_flux_time_regrid(domain_cfg, source.get_mk(year, month))
     if target is None:
         target_lat, target_lon, _ = build_target_grid(domain_cfg, cfg)
     else:
@@ -789,12 +972,12 @@ def extract_single(
             inst_arrays.append(_regrid_da(u_t, uname))
             inst_arrays.append(_regrid_da(v_t, vname))
 
-        # --- Averaged mass fields (e.g. sensible heat): restamp to interval end, regrid ---
+        # --- Averaged mass fields (e.g. sensible heat): stamp per flux_time_regrid, regrid ---
         #     (averaged_staggered_vars are deferred for rotated sources — need
         #      vector rotation; see MetSource.deferred_vars.)
         avg_arrays = []
         for name in source.averaged_mass_vars:
-            c, averaging = _restamp_to_interval_end(_pick(cube, name, False))
+            c, averaging = _stamp_averaged_time(_pick(cube, name, False), flux_regrid)
             avg_arrays.append(_regrid_da(c, name).assign_attrs(averaging))
         del cube
 
@@ -813,8 +996,13 @@ def extract_single(
             for da in avg_arrays:
                 da = _build_time_axis(da, keep_provenance=False)
                 _check_unique_time(da, "single", date)
+                if flux_regrid == "interpolate":
+                    da = _recentre_onto_interval_ends(da)
                 avg_das.append(da)
-            all_variables = xr.merge([inst, *avg_das], join="inner", compat="override")
+            if flux_regrid == "keep":
+                all_variables = _merge_onto_flux_time_axis(inst, avg_das)
+            else:
+                all_variables = xr.merge([inst, *avg_das], join="inner", compat="override")
         else:
             all_variables = inst
         del inst
@@ -825,16 +1013,17 @@ def extract_single(
         all_variables = to_zarr_schema(all_variables)
         all_variables = add_delta_attrs(all_variables)
         grid_mode = domain_cfg.get("grid", {}).get("mode", "regular")
-        year = int(str(date)[:4])
-        month = int(str(date)[4:6]) if len(str(date)) >= 6 else 1
         all_variables = apply_cf_metadata(
             all_variables, cfg, mk=source.get_mk(year, month), grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=True, source_name=source.name,
             max_level_m=max_level_m, wind_vertical_regrid=wind_regrid,
+            flux_time_regrid=flux_regrid,
         )
         all_variables.attrs.update(pole_attrs)
 
         result = all_variables.sortby("time")
+        if FLUX_TIME_DIM in result.dims:
+            result = result.sortby(FLUX_TIME_DIM)
         log(f"single-file extracted; dims {dict(result.sizes)}")
 
         if not save:

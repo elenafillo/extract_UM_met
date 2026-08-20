@@ -22,11 +22,12 @@ import dask
 from .config import (
     Config,
     resolve_config_value,
+    resolve_flux_time_regrid,
     resolve_max_level_m,
     resolve_wind_vertical_regrid,
     store_stem,
 )
-from .metadata import apply_cf_metadata
+from .metadata import FLUX_TIME_DIM, apply_cf_metadata
 from .periods import month_days, period_tag
 from .sources import get_domain_source
 from .regions import (
@@ -189,6 +190,30 @@ def _check_region_wind_regrid(ds, region_id, file_path, expected):
         )
 
 
+def _check_region_flux_regrid(ds, region_id, file_path, expected):
+    """
+    Confirm a region intermediate's fluxes were stamped in the mode now configured.
+
+    The companion of :func:`_check_region_wind_regrid`, for the same reason and
+    against the same reference — the resolved config, which is what the store's
+    ``flux_time_regrid`` attribute will be written from. ``keep`` at least gives
+    itself away by carrying a second time dimension; ``snap`` and ``interpolate``
+    differ in nothing but the numbers, so a run that reused intermediates built
+    under the other one would produce a store whose prose contradicts its own
+    fluxes and nothing anywhere would notice.
+
+    Intermediates written before the option existed carry no attribute and are
+    snapped, which is exactly what the default here asserts.
+    """
+    found = ds.attrs.get("flux_time_regrid", "snap")
+    if found != expected:
+        raise ValueError(
+            f"region {region_id} intermediate was built with "
+            f"flux_time_regrid={found!r}, but the domain is now configured for "
+            f"{expected!r}. Delete the stale intermediates and re-extract — {file_path}"
+        )
+
+
 def join_month(
     domain_key,
     year,
@@ -268,6 +293,9 @@ def join_month(
         source = get_domain_source(domain_cfg, cfg)
     mk = source.get_mk(year, month_int)
     wind_regrid = resolve_wind_vertical_regrid(domain_cfg)
+    # Same mk as extract_region resolves against, so the mode this checks the
+    # intermediates for and writes to the store is the one they were built with.
+    flux_regrid = resolve_flux_time_regrid(domain_cfg, mk)
 
     # Resolve the target grid once for the whole period.
     if target is None:
@@ -333,6 +361,7 @@ def join_month(
                     region_ds, region_id, file_path, region_levels
                 )
                 _check_region_wind_regrid(region_ds, region_id, file_path, wind_regrid)
+                _check_region_flux_regrid(region_ds, region_id, file_path, flux_regrid)
                 lat_datasets.append(region_ds)
 
             log(f"Merging column {column} along latitude")
@@ -357,6 +386,8 @@ def join_month(
         )
         met = met.drop_duplicates(dim="longitude")
         met = met.sortby(["latitude", "longitude", "time"])
+        if FLUX_TIME_DIM in met.dims:
+            met = met.sortby(FLUX_TIME_DIM)
         log(f"Full domain assembled — shape: {dict(met.sizes)}")
 
         log("Filling potential 1-cell seams across region joins")
@@ -390,7 +421,7 @@ def join_month(
             met, cfg, mk=mk, grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=use_interp,
             source_name=source.name, max_level_m=resolve_max_level_m(domain_cfg),
-            wind_vertical_regrid=wind_regrid,
+            wind_vertical_regrid=wind_regrid, flux_time_regrid=flux_regrid,
         )
 
         log(f"{date_tag} dataset ready: {dict(met.sizes)} "

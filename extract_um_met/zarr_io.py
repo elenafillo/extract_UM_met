@@ -2,8 +2,9 @@
 Zarr I/O utilities for yearly meteorology stores.
 
 Appends monthly domain datasets to a yearly zarr store (one store per year,
-appended along the time dimension), and finalizes provenance attributes once a
-year's months are all written.
+appended along the time dimension — and along ``time_flux`` as well when the
+domain sets ``flux_time_regrid: keep``), and finalizes provenance attributes once
+a year's months are all written.
 
 The default chunk layout keeps ``time=1`` (single-timestep scattered reads are
 the dominant access pattern), groups levels in 3s, and keeps lat/lon whole. A
@@ -21,12 +22,17 @@ import numpy as np
 import xarray as xr
 
 from . import glide
+from .metadata import FLUX_TIME_DIM
 
 
-_ZARR_CHUNKS = {"time": 1, "lat": -1, "lon": -1, "levels": 3}
+# time_flux carries one point per averaging window the archive supplies (see
+# extract._merge_onto_flux_time_axis), so it takes time's layout: a domain that
+# only exists in stores built with flux_time_regrid: keep, and absent from every
+# other store.
+_ZARR_CHUNKS = {"time": 1, "lat": -1, "lon": -1, "levels": 3, FLUX_TIME_DIM: 1}
 
 # The output schema's dims — the only keys a domain may chunk on.
-CHUNK_DIMS = ("time", "levels", "lat", "lon")
+CHUNK_DIMS = ("time", "levels", "lat", "lon", FLUX_TIME_DIM)
 
 # zstd level used when a store is created, unless the top-level config key or the
 # domain sets one.
@@ -228,11 +234,12 @@ def _build_encoding(ds, zarr_format, compression_level, precision="float32"):
         if enc:
             encoding[v] = enc
 
-    if "time" in ds.coords and np.issubdtype(ds["time"].dtype, np.datetime64):
-        encoding["time"] = {
-            "units": "seconds since 1970-01-01",
-            "calendar": "proleptic_gregorian",
-        }
+    for name in ("time", FLUX_TIME_DIM):
+        if name in ds.coords and np.issubdtype(ds[name].dtype, np.datetime64):
+            encoding[name] = {
+                "units": "seconds since 1970-01-01",
+                "calendar": "proleptic_gregorian",
+            }
 
     return encoding
 
@@ -307,6 +314,95 @@ def _check_store_wind_regrid(ds, store_path):
         )
 
 
+def _half_window(ds):
+    """
+    Half the averaging window of the period's time-averaged fields, as a
+    timedelta64, read from the fields' own ``averaging_period_hours``.
+
+    Every variable on ``time_flux`` carries it and they all describe the same
+    window — ``extract._averaging_attrs`` raises rather than emit two — so the
+    first one found answers for all of them.
+    """
+    for name in ds.data_vars:
+        if FLUX_TIME_DIM in ds[name].dims:
+            hours = ds[name].attrs["averaging_period_hours"]
+            return np.timedelta64(round(hours * 1800), "s")
+
+
+def _check_store_flux_time(ds, store_path):
+    """
+    Confirm an incoming period's flux stamping matches the store, and that the
+    store's two time axes are in step.
+
+    Two checks because one open serves both.
+
+    The mode, for the reason ``_check_store_wind_regrid`` exists: ``snap`` and
+    ``interpolate`` produce fields of identical shape, coordinates and dtype, so
+    flipping between them mid-year would leave a silent discontinuity at whichever
+    month the config changed.
+
+    The axes being in step, because under ``keep`` an append is two ``to_zarr``
+    calls — ``append_dim`` takes one dimension — and a run killed between them
+    leaves ``time`` a period longer than ``time_flux``. Nothing else would find
+    it: the resume path reads ``time``, sees the period present, and carries on
+    from the next one, so the store keeps growing with the fluxes permanently a
+    period behind and every flux read against the wrong step.
+
+    What "in step" means is *not* one flux point per time step. Before Mk10 the
+    archive supplies a window on only every other step, so a valid ``keep`` store
+    has half as many (see How_Tos/known_problems.md). The relation that does hold
+    at both cadences is on the last value of each axis: whatever the spacing, the
+    final window of a period is the one closing on that period's final time step,
+    so its midpoint sits exactly half a window earlier. An interruption leaves
+    ``time_flux`` a whole period short of that, which is far outside the
+    tolerance of an equality on timestamps.
+
+    Periods and stores written before the option existed carry no attribute and
+    are snapped, so the default keeps an in-flight append working.
+    """
+    with xr.open_zarr(store_path, consolidated=True) as existing:
+        store_mode = existing.attrs.get("flux_time_regrid", "snap")
+        last_time = existing["time"].values[-1]
+        last_flux = (existing[FLUX_TIME_DIM].values[-1]
+                     if FLUX_TIME_DIM in existing.dims else None)
+    mode = ds.attrs.get("flux_time_regrid", "snap")
+    if mode != store_mode:
+        raise ValueError(
+            f"cannot append: this period was built with flux_time_regrid={mode!r} "
+            f"but {store_path} holds {store_mode!r}. The flux timestamping changed "
+            f"mid-store, which would leave the averaged fields meaning two "
+            f"different things on one time axis. Rebuild the year with --overwrite."
+        )
+    if last_flux is not None:
+        expected = last_time - _half_window(ds)
+        if last_flux != expected:
+            raise ValueError(
+                f"cannot append: {store_path} ends at time {last_time} but its last "
+                f"{FLUX_TIME_DIM} is {last_flux}, not the {expected} that closes on "
+                f"it. An earlier append was interrupted between writing the two "
+                f"axes. Rebuild the year with --overwrite."
+            )
+
+
+def _append_both_time_axes(ds, store_path):
+    """
+    Append a period to a store carrying both time axes, one axis per call.
+
+    ``to_zarr`` takes a single ``append_dim``, so the variables on ``time`` and
+    those on ``time_flux`` go separately. ``drop_dims`` does the splitting: it
+    drops a dimension and every variable that uses it, which is exactly the
+    complement each call wants, and it takes the dangling coordinate with it — a
+    stale ``time_flux`` left in the ``time`` write would be re-written at the
+    incoming period's length against the store's full one and fail there.
+
+    Order matters only for the diagnosis: ``time`` goes first, so an interruption
+    leaves the store one period long on ``time`` and short on ``time_flux``, which
+    is the direction :func:`_check_store_flux_time` reports.
+    """
+    _to_zarr(ds.drop_dims(FLUX_TIME_DIM), store_path, append_dim="time")
+    _to_zarr(ds.drop_dims("time"), store_path, append_dim=FLUX_TIME_DIM)
+
+
 def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
                                chunks=None, compression_level=None,
                                precision="float32"):
@@ -360,7 +456,11 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
         else:
             _check_store_levels(ds, store_path)
             _check_store_wind_regrid(ds, store_path)
-            _to_zarr(ds, store_path, append_dim="time")
+            _check_store_flux_time(ds, store_path)
+            if FLUX_TIME_DIM in ds.dims:
+                _append_both_time_axes(ds, store_path)
+            else:
+                _to_zarr(ds, store_path, append_dim="time")
 
     return str(store_path)
 
