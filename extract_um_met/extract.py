@@ -981,6 +981,16 @@ def extract_single(
             f"source {source.name!r} is extracted by the non-tiled path, where the "
             f"vertical de-stagger is not implemented. Use 'snap' for this domain."
         )
+    # Same argument for the whole profile: the GLIDE schema is applied in
+    # join_month, which this path never reaches, so a store would come out under
+    # our names — and therefore with nothing quantised, since QUANT_RANGES is
+    # keyed on GLIDE's, while its attributes claimed int16.
+    if domain_cfg.get("output_profile") == "glide":
+        raise ValueError(
+            f"domain {domain_name!r} sets output_profile: glide, but source "
+            f"{source.name!r} is extracted by the non-tiled path, which does not "
+            f"apply the GLIDE schema. The profile is for the tiled UM global archive."
+        )
     # flux_time_regrid, by contrast, is arithmetic on the time coordinate alone
     # and has nothing source-specific in it, so all three modes work here — though
     # the year's lowest Mk still decides whether the archive can support more

@@ -29,6 +29,7 @@ from .config import (Config, load_config, resolve_config_value,
 from .iris_io import get_Mk, load_iris, remove_coord_callback
 from .regions import get_saved_region_bounds
 from .grid import extract_native_grid, save_native_grid, build_target_grid
+from .glide import rename_chunks
 from .topog import extract_topog
 from .extract import extract_region, extract_single
 from .join import join_month, cleanup_region_intermediates
@@ -614,6 +615,10 @@ def cmd_run(args):
     # intermediate_period fails before any extraction runs. An output_profile has
     # already filled in its defaults, in Config.get_domain.
     output_chunks = resolve_output_chunks(domain_cfg)
+    if domain_cfg.get("output_profile") == "glide":
+        # The dims are chunked under our names and written under GLIDE's, and
+        # _rechunk reads an unmatched key as "whole dim" rather than failing.
+        output_chunks = rename_chunks(output_chunks)
     compression_level = resolve_compression_level(cfg, domain_cfg)
     precision = resolve_precision(domain_cfg)
     max_level_m = resolve_max_level_m(domain_cfg)
