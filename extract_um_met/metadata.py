@@ -111,7 +111,7 @@ def _clean(mapping):
 
 def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=True,
                       source_name=None, max_level_m=None, wind_vertical_regrid="snap",
-                      flux_time_regrid="snap"):
+                      flux_time_regrid="snap", coord_decimals=None):
     """
     Stamp CF coordinate and global attributes onto a monthly/period dataset.
 
@@ -158,6 +158,14 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         shape says which it is. The per-variable ``averaging*`` attributes say
         the same thing field by field; this is the store-level statement the
         append guard reads.
+    coord_decimals : int, optional
+        The decimal places lat/lon were rounded to before the float32 cast — see
+        :func:`extract_um_met.config.resolve_coord_decimals`. Recorded so two
+        stores that will not align can be told apart from their attributes
+        rather than from the union axis and silent NaN fill that alignment
+        produces. ``None`` on paths that do not round at all (the non-tiled
+        single-file path), where recording a value would claim a convention the
+        coordinates were never put on.
 
     Returns
     -------
@@ -265,6 +273,8 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         attrs["data_type"] = source_name
     if max_level_m is not None:
         attrs["max_level_m"] = float(max_level_m)
+    if coord_decimals is not None:
+        attrs["coord_decimals"] = int(coord_decimals)
     ds.attrs.update(_clean(attrs))
 
     return ds

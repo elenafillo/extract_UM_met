@@ -22,6 +22,7 @@ import numpy as np
 import xarray as xr
 
 from . import glide
+from .config import COORD_DECIMALS_DEFAULT
 from .metadata import FLUX_TIME_DIM
 
 
@@ -264,6 +265,21 @@ def _quiet_missing_fill_value_warning():
         yield
 
 
+def _size(sizes, *names):
+    """
+    The length of whichever of ``names`` the store has, or -1 for none of them.
+
+    The horizontal and vertical dimensions go by two sets of names — ours and,
+    under ``output_profile: glide``, GLIDE's (see
+    :data:`extract_um_met.glide.COORD_RENAMES`) — and a store recording
+    ``n_lat: -1`` for a domain that plainly has latitudes is worse than useless.
+    """
+    for name in names:
+        if name in sizes:
+            return int(sizes[name])
+    return -1
+
+
 def _check_store_levels(ds, store_path):
     """
     Confirm an incoming period's levels match the store it is being appended to.
@@ -273,12 +289,18 @@ def _check_store_levels(ds, store_path):
     level set. Appending that would mix two vertical grids in one store; raise
     here, naming both selections, rather than let zarr fail on a shape mismatch
     far from the cause.
+
+    The dimension is asked for rather than assumed: under the GLIDE schema it is
+    called ``level``, and hardcoding ``levels`` would turn this guard into a
+    silent no-op on exactly the stores whose consumer cannot survive a level
+    change.
     """
-    if "levels" not in ds.dims:
+    dim = glide.level_dim(ds)
+    if dim is None:
         return
     with xr.open_zarr(store_path, consolidated=True) as existing:
-        store_levels = [int(v) for v in existing["levels"].values]
-    levels = [int(v) for v in ds["levels"].values]
+        store_levels = [int(v) for v in existing[dim].values]
+    levels = [int(v) for v in ds[dim].values]
     if levels != store_levels:
         raise ValueError(
             f"cannot append: this period has {len(levels)} model levels "
@@ -311,6 +333,34 @@ def _check_store_wind_regrid(ds, store_path):
             f"{mode!r} but {store_path} holds {store_mode!r}. The wind treatment "
             f"changed mid-store, which would leave u/v meaning two different "
             f"things on one time axis. Rebuild the year with --overwrite."
+        )
+
+
+def _check_store_coord_decimals(ds, store_path):
+    """
+    Confirm an incoming period rounds its coordinates the way the store does.
+
+    Appending along ``time`` does not touch ``lat``/``lon``: the store keeps the
+    coordinates it was created with and the new blocks are stacked against them.
+    So a period built with a different ``coord_decimals`` is written under labels
+    it does not actually carry, and nothing in zarr notices — the store simply
+    stops being the thing its attributes say it is, which is the failure this key
+    exists to prevent rather than cause.
+
+    Stores written before the key existed carry no attribute and were rounded to
+    :data:`extract_um_met.config.COORD_DECIMALS_DEFAULT`, so the default keeps an
+    in-flight append working.
+    """
+    with xr.open_zarr(store_path, consolidated=True) as existing:
+        store_decimals = int(existing.attrs.get("coord_decimals", COORD_DECIMALS_DEFAULT))
+    decimals = int(ds.attrs.get("coord_decimals", COORD_DECIMALS_DEFAULT))
+    if decimals != store_decimals:
+        raise ValueError(
+            f"cannot append: this period rounds lat/lon to {decimals} decimals but "
+            f"{store_path} was written with {store_decimals}. The two are on "
+            f"different coordinate conventions and will not align — a consumer "
+            f"reading them as one set gets a union axis and silent NaN fill. "
+            f"Rebuild the year with --overwrite."
         )
 
 
@@ -457,6 +507,7 @@ def append_month_to_year_store(month_ds, store_path, zarr_format=2, first=False,
             _check_store_levels(ds, store_path)
             _check_store_wind_regrid(ds, store_path)
             _check_store_flux_time(ds, store_path)
+            _check_store_coord_decimals(ds, store_path)
             if FLUX_TIME_DIM in ds.dims:
                 _append_both_time_axes(ds, store_path)
             else:
@@ -511,10 +562,10 @@ def finalize_attrs(store_path, extra_attrs=None, chunks=None, compression_level=
     attrs = {
         "created_by": getpass.getuser(),
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        "n_lat": int(sizes.get("lat", -1)),
-        "n_lon": int(sizes.get("lon", -1)),
+        "n_lat": _size(sizes, "lat", "latitude"),
+        "n_lon": _size(sizes, "lon", "longitude"),
         "n_time": int(sizes.get("time", -1)),
-        "n_levels": int(sizes.get("levels", -1)),
+        "n_levels": _size(sizes, "levels", "level"),
         "time_start": str(times[0]),
         "time_end": str(times[-1]),
         "zarr_chunks": str(chunks or _ZARR_CHUNKS),

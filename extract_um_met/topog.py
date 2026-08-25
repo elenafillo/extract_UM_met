@@ -30,9 +30,8 @@ import iris
 import numpy as np
 import xarray as xr
 
-from .config import Config, resolve_config_value
+from .config import Config, resolve_config_value, resolve_coord_decimals
 from .grid import build_target_grid
-from .join import COORD_DECIMALS
 from .rotated import latlon_target_cube, latlon_regridder, rotated_pole_attrs
 from .sources import get_source
 
@@ -105,18 +104,22 @@ def _resolve_topog_file(cfg, source_name, mk):
     return Path(topog_file)
 
 
-def _store_coord(values):
+def _store_coord(values, decimals):
     """
     A coordinate in the met store's own float32 representation.
 
-    ``join.normalize_coords`` rounds to ``COORD_DECIMALS`` before casting, and for
-    ``|lon| < 16`` — where float32 resolves finer than 1e-6 — that lands one ULP
-    off the true grid value. Reproducing it here rather than casting the exact
-    value is what keeps this index *bit-identical* to the store's: xarray aligns
-    on exact equality, so a one-ULP difference merges to a union axis and fills
-    the mismatched columns with NaN instead of raising.
+    ``join.normalize_coords`` rounds to the domain's ``coord_decimals`` before
+    casting, so this reproduces the same rounding rather than casting the exact
+    value: that is what keeps this index *bit-identical* to the store's. xarray
+    aligns on exact equality, so a one-ULP difference merges to a union axis and
+    fills the mismatched columns with NaN instead of raising.
+
+    The domain's own value has to be used, not a constant. At 6 decimals this
+    reproduces the store's one-ULP error deliberately; at 7 it reproduces the
+    correct grid. Either is fine — what is not fine is the ancillary being on one
+    convention while the stores it is meant to be read beside are on the other.
     """
-    return np.round(values.astype(np.float64), COORD_DECIMALS).astype(np.float32)
+    return np.round(values.astype(np.float64), decimals).astype(np.float32)
 
 
 def _normalised_orography(cube):
@@ -247,6 +250,7 @@ def extract_topog(domain_key, cfg, year):
     print(f"    Mk{mk} ancillary: {topog_file}")
 
     cube = _load_single_cube(topog_file, "surface_altitude")
+    coord_decimals = resolve_coord_decimals(domain_cfg)
 
     if domain_cfg.get("grid", {}).get("mode") == "global":
         target_lat, target_lon, data = _orography_global(cube, source)
@@ -268,7 +272,10 @@ def extract_topog(domain_key, cfg, year):
     da = xr.DataArray(
         np.asarray(data, dtype="float32"),
         dims=("lat", "lon"),
-        coords={"lat": _store_coord(target_lat), "lon": _store_coord(target_lon)},
+        coords={
+            "lat": _store_coord(target_lat, coord_decimals),
+            "lon": _store_coord(target_lon, coord_decimals),
+        },
         name="surface_altitude",
         attrs={
             "units": "m",
@@ -283,6 +290,9 @@ def extract_topog(domain_key, cfg, year):
     ds.attrs.update(
         _ancillary_global_attrs(cfg, domain_name, source_name, mk, year, topog_file, grid_comment)
     )
+    # The convention this index was built on. It has to match the met stores this
+    # file is read beside, and it is the only thing on either that says so.
+    ds.attrs["coord_decimals"] = coord_decimals
 
     # Default beside the met stores, so a domain's orography sits next to the
     # yearly zarr it belongs with.

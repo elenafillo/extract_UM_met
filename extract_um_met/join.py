@@ -22,11 +22,13 @@ import dask
 from .config import (
     Config,
     resolve_config_value,
+    resolve_coord_decimals,
     resolve_flux_time_regrid,
     resolve_max_level_m,
     resolve_wind_vertical_regrid,
     store_stem,
 )
+from .glide import apply_glide_schema
 from .metadata import FLUX_TIME_DIM, apply_cf_metadata
 from .periods import month_days, period_tag
 from .sources import get_domain_source
@@ -37,8 +39,6 @@ from .regions import (
 from .grid import build_target_grid
 from .extract import extract_region, log
 
-
-COORD_DECIMALS = 6
 
 # UM world regions laid out as they connect geographically. Regions in the same
 # column sit on top of each other (join along latitude); columns sit side by side
@@ -66,8 +66,16 @@ _DROP_VARIABLES = [
 ]
 
 
-def normalize_coords(ds, decimals=COORD_DECIMALS):
-    """Round lat/lon to avoid tiny cross-region floating-point mismatches."""
+def normalize_coords(ds, decimals):
+    """
+    Round lat/lon to avoid tiny cross-region floating-point mismatches.
+
+    ``decimals`` is required rather than defaulted: it decides which coordinate
+    convention the store ends up on, and stores on different conventions cannot
+    be read as one set (see
+    :func:`extract_um_met.config.resolve_coord_decimals`). A default here would
+    let a caller pick that convention by omission.
+    """
     return ds.assign_coords(
         latitude=np.round(ds.latitude.values.astype(np.float64), decimals).astype(np.float32),
         longitude=np.round(ds.longitude.values.astype(np.float64), decimals).astype(np.float32),
@@ -117,7 +125,7 @@ def _region_intermediate_path(scratch_dir, stem, date_tag, region_id):
     return os.path.join(scratch_dir, f"{stem}_Met_{date_tag}_{region_id}.zarr")
 
 
-def _open_region(file_path, region_id):
+def _open_region(file_path, region_id, coord_decimals):
     """Open one per-region zarr intermediate and clean its coordinates for stitching."""
     log(f"Opening region {region_id}: {file_path}")
     ds = xr.open_zarr(file_path)
@@ -132,7 +140,7 @@ def _open_region(file_path, region_id):
     for v in ds.data_vars:
         if ds[v].dtype != "float32":
             ds[v] = ds[v].astype("float32")
-    ds = normalize_coords(ds)
+    ds = normalize_coords(ds, coord_decimals)
     ds = ds.sortby("longitude")
     ds = drop_duplicate_coords(ds, "longitude")
     ds = drop_duplicate_coords(ds, "latitude")
@@ -298,6 +306,7 @@ def join_month(
     # built with. Per-month here would disagree with them for every month of a
     # year that spans the Mk9/Mk10 boundary.
     flux_regrid = resolve_flux_time_regrid(domain_cfg, source.min_mk_in_year(year))
+    coord_decimals = resolve_coord_decimals(domain_cfg)
 
     # Resolve the target grid once for the whole period.
     if target is None:
@@ -358,7 +367,7 @@ def join_month(
                 file_path = _region_intermediate_path(
                     scratch_dir, stem, date_tag, region_id
                 )
-                region_ds = _open_region(file_path, region_id)
+                region_ds = _open_region(file_path, region_id, coord_decimals)
                 region_levels = _check_region_levels(
                     region_ds, region_id, file_path, region_levels
                 )
@@ -424,7 +433,15 @@ def join_month(
             domain_name=domain_name, year=year, use_interp=use_interp,
             source_name=source.name, max_level_m=resolve_max_level_m(domain_cfg),
             wind_vertical_regrid=wind_regrid, flux_time_regrid=flux_regrid,
+            coord_decimals=coord_decimals,
         )
+
+        # Last, so that everything above — the stitching, the guards, the CF
+        # metadata — works in our own names and only the store changes.
+        if domain_cfg.get("output_profile") == "glide":
+            met = apply_glide_schema(met)
+            log("applied the GLIDE schema: their variable and coordinate names, "
+                "the heat flux negated")
 
         log(f"{date_tag} dataset ready: {dict(met.sizes)} "
             f"(delta_lat={met.attrs.get('delta_lat', 'n/a')}, "

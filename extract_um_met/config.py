@@ -129,6 +129,49 @@ def resolve_max_level_m(domain_cfg):
     return ceiling
 
 
+# Decimal places lat/lon are rounded to before the float32 cast that puts them in
+# a store. Every store written so far used 6, which is why it is the default: a
+# domain that keeps it stays alignable with everything already on disk.
+COORD_DECIMALS_DEFAULT = 6
+
+
+def resolve_coord_decimals(domain_cfg):
+    """
+    Decimal places a domain rounds lat/lon to before casting them to float32.
+
+    The rounding exists to kill cross-region floating-point noise before the
+    concats in :mod:`extract_um_met.join` align on it, which is why it cannot
+    simply be dropped. But 6 is one decimal too coarse for the UM's own grids.
+    UM longitudes are half-cell offset, so they are multiples of 9/128 on the
+    Mk8-12 grids and 45/256 on Mk6-7 — seven and eight decimals — while float32
+    resolves finer than 1e-6 for ``|lon| < 16``. Rounding to 6 there lands one
+    ULP off the true grid value; 228 of EUROPE's 974 longitudes are affected.
+
+    Physically that is ~7 millionths of a cell and irrelevant. What it breaks is
+    *exact* index alignment, which is what xarray joins on and what a consumer
+    reading several stores as one set requires: merging a correctly-computed
+    field onto such a store produces a union axis and silently NaN-fills the
+    mismatch rather than raising.
+
+    Per domain, and defaulting to :data:`COORD_DECIMALS_DEFAULT`, because the
+    value changes every coordinate in the store: a domain that keeps 6 stays
+    byte-compatible with what is already written, and a domain that raises it is
+    deliberately starting a new, incompatible set. Recorded as a store attribute
+    so a mismatch is diagnosable from the attributes rather than from an
+    alignment failure a long way downstream.
+
+    Use **7 for Mk8-12** and **8 for Mk6-7**. 8 is correct for every Mk and only
+    leaves less margin against genuine floating-point noise.
+    """
+    decimals = int(domain_cfg.get("coord_decimals", COORD_DECIMALS_DEFAULT))
+    if decimals < 1:
+        raise ValueError(
+            f"domain coord_decimals must be a positive number of decimal places, "
+            f"got {decimals}"
+        )
+    return decimals
+
+
 def resolve_wind_vertical_regrid(domain_cfg):
     """
     How a domain treats the winds' vertical staggering: ``"snap"`` or ``"interpolate"``.

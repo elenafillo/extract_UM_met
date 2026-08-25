@@ -335,12 +335,25 @@ def _build_footprint_grid(domain_cfg, grid_spec, cfg):
     fp = xr.load_dataset(footprint_path)
 
     # Crop to where measurements actually are, so padding grows outward from the
-    # release locations rather than the footprint's full extent.
+    # release locations rather than the footprint's full extent. That box only
+    # exists for a footprint whose releases are spread over the domain, as a
+    # satellite column's soundings are. A fixed site (a tower — RGL releases from
+    # one coordinate at every timestep) has no box: its release point lands
+    # between two cell centres, so slicing on it selects nothing and leaves an
+    # empty grid. The footprint's own extent is already the region that site
+    # sees, so it is kept whole.
     if 'release_lon' in fp and 'release_lat' in fp:
-        fp = fp.sel(
-            lon=slice(float(fp.release_lon.min()), float(fp.release_lon.max())),
-            lat=slice(float(fp.release_lat.min()), float(fp.release_lat.max())),
-        )
+        release_lon_min, release_lon_max = float(fp.release_lon.min()), float(fp.release_lon.max())
+        release_lat_min, release_lat_max = float(fp.release_lat.min()), float(fp.release_lat.max())
+        if release_lon_min < release_lon_max and release_lat_min < release_lat_max:
+            fp = fp.sel(
+                lon=slice(release_lon_min, release_lon_max),
+                lat=slice(release_lat_min, release_lat_max),
+            )
+        else:
+            print(f"  footprint releases from a single location "
+                  f"({release_lat_min:.4f}, {release_lon_min:.4f}); "
+                  f"keeping its full extent to pad outward from")
 
     latitudes = list(fp.lat.values)
     longitudes = list(fp.lon.values)
