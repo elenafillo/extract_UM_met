@@ -21,8 +21,9 @@ come from; the message quoted is the one the tool actually prints.
 | `Domain 'X' not found by key or domain_name` | Typo, or the domain is not in your `config.yaml`. `--domain` takes either the key (`SA`) or the `domain_name` (`SOUTHAMERICA`). |
 | `domain output_chunks: unknown dim(s) {...}` | Chunk keys are `time`, `levels`, `lat`, `lon` — not `latitude`/`longitude`. This raises at config load rather than silently ignoring you. |
 | `domain output_chunks: chunk size for 'X' must be a positive integer or -1` | `-1` means "one chunk spanning the whole dim"; `0` and negatives other than `-1` are not valid. |
-| `data_types override 'X' must be a list of ...` | A malformed `mass_vars` / `wind_vars` / `model_levels` block. See [reference.md §2](reference.md#2-choosing-your-own-variables-and-levels) for the exact forms. |
-| `data_types override 'X': level(s) {...} out of range` | `model_levels` is **1-based** and must fit the source (L59 global, L70 NZCSM). |
+| `data_types override 'X' must be a list of ...` / `domain 'EUROPE' 'X' must be a list of ...` | A malformed `mass_vars` / `wind_vars` / `model_levels` block. The message names the block it came from, since both `data_types:` and a domain accept these keys. See [reference.md §2](reference.md#2-choosing-your-own-variables-and-levels) for the exact forms. |
+| `... 'X': level(s) {...} out of range` | `model_levels` is **1-based** and must fit the source (L59 global, L70 NZCSM). |
+| `... 'wind_vars': the winds are extracted as a u/v pair` | You named one wind. Give both or neither — u and v are rotated onto the mass grid together, so a lone one has nothing to rotate against. |
 | `domain intermediate_period: unknown period 'X'` | Valid values are `month` (default), `week` and `day` — see [reference.md §5](reference.md#5-scratch-intermediates-and-peak-memory). Raised at config resolution rather than part-way through a run. |
 | `Could not parse --date 'X'. Use YYYY, YYYYMM, or YYYYMMDD.` | Only those three forms. Also `Month out of range` / `Day out of range`. |
 | `--date all is not supported for extraction` | The `extract` subcommand takes `YYYYMM` or `YYYYMMDD` only — no full-year form. Use `run` for a year. |
@@ -113,11 +114,11 @@ level flag has to be right; see [reference.md §3](reference.md#3-raw-um-variabl
 These are known limitations rather than crashes — they produce data, just not the
 data you might expect. All are tracked in the [roadmap](roadmap_and_contributing.md).
 
-- **A `native`-mode domain is bigger than its bounds.** `lat_bounds`/`lon_bounds`
-  in a `native` grid block currently shape only the canonical target grid;
-  extraction still passes each region through at its full region extent. So a
-  native domain is not cropped as tightly as its footprint-mode counterpart.
-  Footprint and regular modes are unaffected.
+- **A domain is a cell bigger than its bounds on each edge.** That is deliberate:
+  `lat_bounds`/`lon_bounds` are bracketed, so the box you ask for falls inside
+  the grid you get rather than a fraction of a cell outside it (see
+  [concepts](concepts.md#4-grid-modes)). Ask for bounds that land on grid points
+  if you want the extraction tight.
 - **NZCSM artifacts at the domain edges.** Extracted New Zealand data shows edge
   artifacts, most likely from rotated-pole → regular lat/lon regridding at the
   boundary (extrapolation into partial-coverage cells) and/or dateline handling,

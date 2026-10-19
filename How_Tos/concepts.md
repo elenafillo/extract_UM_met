@@ -28,8 +28,8 @@ one product.
 A domain picks its data type with `data_type:` in config (default `UM_Global`
 if omitted). The structural properties above are code-defined — what you set per
 data type in `config.yaml → data_types:` is the **archive path**, plus optionally
-which variables and model levels to extract
-([reference.md](reference.md#2-choosing-your-own-variables-and-levels)).
+which variables and model levels to extract, which a domain may override for
+itself ([reference.md](reference.md#2-choosing-your-own-variables-and-levels)).
 
 - **Tiled** sources (`UM_Global`, `UM1p5km`) split the globe/UK into region
   files. A domain names the regions it needs (`world_regions_codes`), the
@@ -188,11 +188,14 @@ outward by `edge_size_*` cells using the NAME reference spacing (Δlat 0.234,
 by month count) so time-appends stay aligned; months already on that Mk pass
 through untouched, off-Mk months are interpolated onto it.
 
-> ⚠️ **Native-mode cropping gap:** `lat_bounds`/`lon_bounds` in a `native` block
-> currently shape only the canonical target grid — extraction still passes each
-> region through at its full region extent (sliced to region bounds only), so a
-> native domain is not yet cropped to a tight bounding box. Footprint/regular
-> modes are unaffected. (Known limitation; tracked in the [roadmap](roadmap_and_contributing.md).)
+**Bounds are bracketing, not strictly-inside.** `lat_bounds`/`lon_bounds` select
+the last grid point at or below the lower bound and the first at or above the
+upper one, so the box you ask for is *inside* the grid you get — by up to one
+cell per edge. `regular` mode does the same by running its `np.arange` on to the
+first step at or beyond the upper bound. A bound that lands exactly on a grid
+point adds no cell. The alternative, keeping only the points strictly inside,
+leaves a strip of the requested box unserved, which a consumer whose own spatial
+slice clips silently would advect on edge-clamped data.
 
 ### Grid spec examples (config)
 

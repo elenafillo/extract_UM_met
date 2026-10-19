@@ -381,9 +381,43 @@ def _build_footprint_grid(domain_cfg, grid_spec, cfg):
     return latitudes, longitudes
 
 
+def _bracket_bounds(values, bounds):
+    """
+    Subset an ascending 1-D coordinate to the points that bracket `bounds`.
+
+    Keeping only the points strictly inside the bounds leaves the requested box
+    outside the grid by up to a cell on each edge. A consumer whose own spatial
+    slice clips silently then advects on edge-clamped data over that strip, so
+    take the last point at or below the lower bound and the first at or above
+    the upper one, putting the requested bounds inside the grid instead. A bound
+    that lands exactly on a grid point adds nothing; one outside the grid
+    clamps to the end of the axis.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        A strictly ascending 1-D coordinate array.
+    bounds : sequence of float
+        The (lower, upper) bounds to bracket.
+
+    Returns
+    -------
+    np.ndarray
+        The bracketing slice of `values`.
+    """
+    lower, upper = bounds
+    start = max(np.searchsorted(values, lower, side='right') - 1, 0)
+    stop = np.searchsorted(values, upper, side='left') + 1
+    return values[start:stop]
+
+
 def _build_regular_grid(grid_spec):
     """
     Build a regular 1D lat/lon grid from bounds and resolution.
+
+    The mesh runs from the lower bound to the first step at or beyond the upper
+    one, so both bounds fall inside the grid — matching how native mode brackets
+    its bounds.
 
     Parameters
     ----------
@@ -405,8 +439,8 @@ def _build_regular_grid(grid_spec):
             "Regular mode requires 'lat_bounds', 'lon_bounds', 'dlat', 'dlon' in grid spec"
         )
 
-    lat = np.arange(lat_bounds[0], lat_bounds[1], dlat)
-    lon = np.arange(lon_bounds[0], lon_bounds[1], dlon)
+    lat = np.arange(lat_bounds[0], lat_bounds[1] + dlat, dlat)
+    lon = np.arange(lon_bounds[0], lon_bounds[1] + dlon, dlon)
 
     return lat, lon
 
@@ -430,7 +464,8 @@ def _build_native_grid(domain_cfg, grid_spec, cfg, mk):
     Load a native UM grid, optionally subsetted to bounds.
 
     Loads the stitched global native grid for the canonical Mk and subsets it to
-    lat_bounds/lon_bounds if specified. No interpolation is implied.
+    the points bracketing lat_bounds/lon_bounds if specified, so the requested
+    bounds fall inside the grid. No interpolation is implied.
 
     Parameters
     ----------
@@ -457,14 +492,14 @@ def _build_native_grid(domain_cfg, grid_spec, cfg, mk):
     native_mk = _resolve_native_mk(grid_spec, mk)
     lat, lon = load_native_grid(native_mk, output_dir=native_grid_dir)
 
-    # Subset if bounds are specified
+    # Subset if bounds are specified, keeping the grid points that bracket them
     lat_bounds = grid_spec.get('lat_bounds')
     lon_bounds = grid_spec.get('lon_bounds')
 
     if lat_bounds:
-        lat = lat[(lat >= lat_bounds[0]) & (lat <= lat_bounds[1])]
+        lat = _bracket_bounds(lat, lat_bounds)
     if lon_bounds:
-        lon = lon[(lon >= lon_bounds[0]) & (lon <= lon_bounds[1])]
+        lon = _bracket_bounds(lon, lon_bounds)
 
     return lat, lon
 

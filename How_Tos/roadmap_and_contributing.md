@@ -35,11 +35,6 @@ configure and run the tool see [setup.md](setup.md) and
   (mirroring `Global`) so provenance is per-source.
 
 ### Extraction correctness
-- **Native-grid cropping gap:** in `native` mode, extraction passes each region
-  through at its full extent (sliced to region bounds only), so `lat_bounds` /
-  `lon_bounds` in a native `grid:` block currently shape only the canonical
-  target grid, not the extracted output. Add a final crop to those bounds so a
-  native domain matches its footprint-mode counterpart in size.
 - **Single-region fast path:** add a direct extract → setup path (skip the join)
   for domains that map to one world region. `join_month` already handles a
   1-region domain as a trivial concat, but a direct path would avoid the join
