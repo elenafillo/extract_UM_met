@@ -280,6 +280,20 @@ def _size(sizes, *names):
     return -1
 
 
+def _store_chunks(chunks, sizes):
+    """
+    ``chunks`` restricted to the dimensions the store actually has.
+
+    The resolved chunking carries a ``time_flux`` entry whenever the config does,
+    but under ``flux_time_regrid: interpolate`` — which is what the glide profile
+    sets — the averaged fields land on ``time`` and no such dimension is ever
+    written. Recording a chunk for a dimension that is not there makes
+    ``zarr_chunks`` describe a store that does not exist, and it is the one
+    attribute a consumer reads to check the chunking without opening a chunk.
+    """
+    return {dim: size for dim, size in chunks.items() if dim in sizes}
+
+
 def _check_store_levels(ds, store_path):
     """
     Confirm an incoming period's levels match the store it is being appended to.
@@ -568,7 +582,7 @@ def finalize_attrs(store_path, extra_attrs=None, chunks=None, compression_level=
         "n_levels": _size(sizes, "levels", "level"),
         "time_start": str(times[0]),
         "time_end": str(times[-1]),
-        "zarr_chunks": str(chunks or _ZARR_CHUNKS),
+        "zarr_chunks": str(_store_chunks(chunks or _ZARR_CHUNKS, sizes)),
         # Data variables only: the coordinates are small and are left to
         # xarray/zarr's own default compressor.
         "zarr_compression": (
