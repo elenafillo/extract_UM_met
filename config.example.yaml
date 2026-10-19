@@ -55,13 +55,20 @@ metadata:
 #   averaged_staggered_vars time-mean staggered fields     — [cube_name, ...]
 # Names must match the archive's iris cube names exactly; has_levels must say
 # whether the cube carries model levels (a mismatch fails loudly at extraction).
-# Set any group to [] to drop it. Editing these here changes every run using this
-# config, so keep a job-specific config (or a --suffix) for variant extractions.
+# Set any group to [] to drop it; give both winds or neither, since u/v are
+# rotated onto the mass grid as a pair. Editing these here changes every run using
+# this config, so keep a job-specific config (or a --suffix) for variant
+# extractions.
+# Set here they are the default for EVERY domain reading this archive; a domain
+# may name any of the four groups itself and take its own set instead (see the
+# block above `domains:`).
 #
 # Model levels: by default `level_stride` keeps level 1 plus every Nth level.
 # Give an explicit `model_levels` list (1-based, ≤ the source's n_levels) to load
 # exactly those levels instead — it overrides level_stride. `model_levels: "all"`
-# loads every level the source has (59 for UM_Global, 70 for NZCSM)
+# loads every level the source has (59 for UM_Global, 70 for NZCSM).
+# Set here they are the default for EVERY domain reading this archive; a domain
+# may set either key itself and take its own selection instead (see EUROPE below).
 data_types:
   UM_Global:
     # Global UM archive (Mk6–12).
@@ -148,11 +155,25 @@ default_edge_size: [100, 100]
 # otherwise — out-of-range values *wrap* rather than clip under CF scale/offset,
 # which would corrupt the store silently.
 #
-# `drop_vars` names variables never to extract at all. They are dropped from the
-# source's variable groups before anything is loaded, so the saving lands on
-# runtime and scratch as well as on the store. Unlike the `data_types:` variable
-# overrides above — shared by every domain reading the same archive — this is per
-# domain.
+# The four variable groups — `mass_vars`, `wind_vars`, `averaged_mass_vars` and
+# `averaged_staggered_vars` — may be set on a domain as well as under
+# `data_types:` above, in the same forms, and the domain wins. The `data_types:`
+# block is shared by every domain reading the same archive, so without this two
+# domains could never differ on which fields their stores carry. It applies group
+# by group: a domain naming `mass_vars` replaces the mass group and leaves the
+# other three at the archive-wide setting. Within a group it is a replacement
+# rather than an addition, so name the whole set you want.
+#
+# Do NOT set them on a domain with `output_profile: glide`. That profile carries
+# `precision: int16`, whose quantisation ranges cover GLIDE's field set and
+# nothing else, so a variable added here would be written float32 into an
+# otherwise int16 store with nothing on the store's face recording which half is
+# which. Take the profile's field set, or set `precision: float32` as well.
+#
+# `drop_vars` is the subtractive form of the same thing: it names variables never
+# to extract at all. They are dropped from the source's variable groups — the
+# domain's own where it set any — before anything is loaded, so the saving lands
+# on runtime and scratch as well as on the store.
 #
 # `intermediate_period` sets how much time one scratch intermediate covers:
 # month (the default), week (7-day blocks within the month: 1-7, 8-14, 15-21,
@@ -221,10 +242,30 @@ domains:
     domain_name: "EUROPE"
     world_regions_codes: [2, 5, 6, 9]
     intermediate_period: week
+    # Which variables to extract, overriding the data_types: setting above for
+    # this domain alone. Same forms as up there, one group at a time: each group
+    # named here replaces that group entirely, and the groups left out stay at the
+    # archive-wide setting.
+    # mass_vars:
+    #   - [air_temperature, true]
+    #   - [specific_humidity, true]
+    #   - [surface_air_pressure, false]
+    # wind_vars:
+    #   - [x_wind, true]
+    #   - [y_wind, true]
+    # averaged_mass_vars: []
+    # averaged_staggered_vars: []
+    # Which model levels to load, overriding the data_types: setting above for
+    # this domain alone — the block up there is shared by every domain reading the
+    # same archive, so without this two domains could never differ. Give ONE of
+    # the two keys: a domain that states a selection replaces the source's
+    # entirely, since model_levels wins over level_stride wherever both are set.
+    # model_levels: "all"           # or an explicit list, as above
+    # level_stride: 3
     # Height ceiling in metres: drops model levels above it, keeping one
     # bracketing level so a consumer can still interpolate up to the ceiling
-    # itself. Per domain, and composes with the source's level_stride /
-    # model_levels. On the L59 global ladder, 12000 keeps 42 levels.
+    # itself. Per domain, and composes on top of the level selection above. On the
+    # L59 global ladder, 12000 keeps 42 levels.
     # max_level_m: 12000
     # How u/v are treated in the vertical. The UM staggers them Charney-Phillips:
     # the winds live on rho levels, which sit at the midpoints of the theta levels

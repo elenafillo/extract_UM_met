@@ -92,7 +92,9 @@ _REGION_SCHEMES = {
 # ---------------------------------------------------------------------------
 # Variable groups: which cubes to extract and how each is gridded. Selected by
 # (name, want_levels) — see extract_um_met.iris_io._pick. The defaults suit the UM
-# 'I' set; sources override where cube names differ.
+# 'I' set; sources override where cube names differ. Config may override them
+# archive-wide under `data_types:` (get_source) or for one domain alone
+# (resolve_domain_vars), the latter winning.
 #   mass_vars              — already on the mass grid (instantaneous)
 #   wind_vars              — staggered instantaneous winds (u, v); interp/rotate to mass
 #   averaged_mass_vars     — time-mean surface fields on the mass grid
@@ -208,6 +210,16 @@ class MetSource:
                 seen.add(n)
                 out.append(n)
         return out
+
+    def has_averaged_vars(self):
+        """
+        True if the source carries any time-averaged fields.
+
+        Both averaged groups can be emptied — by a ``data_types:`` override or by
+        a domain's own — and a store with neither has no flux timestamps to
+        describe, so the ``flux_time_regrid`` metadata must not claim it does.
+        """
+        return bool(self.averaged_mass_vars or self.averaged_staggered_vars)
 
     def get_mk(self, year, month):
         """Return the Mk version for a date, or None for Mk-less sources."""
@@ -385,44 +397,63 @@ _PAIRED_VAR_KEYS = ("mass_vars", "wind_vars")
 _NAME_VAR_KEYS = ("averaged_mass_vars", "averaged_staggered_vars")
 
 
-def _coerce_paired_vars(value, key):
+def _coerce_paired_vars(value, key, where="data_types override"):
     """
     Coerce a config list of ``[name, want_levels]`` into a tuple of
     ``(str, bool)`` pairs (the in-code form for ``mass_vars`` / ``wind_vars``).
 
     An empty list is allowed and drops the group entirely.
+
+    ``where`` names the block the value came from, since these keys are accepted
+    both under ``data_types:`` and on a domain (see :func:`resolve_domain_vars`)
+    and a message naming the wrong one sends the reader to the wrong place.
+
+    A one-entry ``wind_vars`` is rejected. u and v are rotated onto the mass grid
+    as a pair, so a lone wind has nothing to rotate against: the extraction reads
+    ``wind_vars[0]`` and ``wind_vars[1]`` behind a ``len(...) >= 2`` guard and
+    would drop the single field from the store without a word.
     """
     out = []
     for i, entry in enumerate(value):
         if isinstance(entry, str) or len(entry) != 2:
             raise ValueError(
-                f"data_types override {key!r}: entry {i} must be a "
+                f"{where} {key!r}: entry {i} must be a "
                 f"[cube_name, want_levels] pair, got {entry!r}"
             )
         cube_name, want_levels = entry
         out.append((str(cube_name), bool(want_levels)))
+    if key == "wind_vars" and len(out) == 1:
+        raise ValueError(
+            f"{where} {key!r}: the winds are extracted as a u/v pair, so give "
+            f"both or neither; got only {out[0][0]!r}"
+        )
     return tuple(out)
 
 
-def _coerce_name_vars(value, key):
+def _coerce_name_vars(value, key, where="data_types override"):
     """
     Coerce a config list of cube names into a tuple of strings (the in-code form
     for ``averaged_mass_vars`` / ``averaged_staggered_vars``).
 
-    An empty list is allowed and drops the group entirely.
+    An empty list is allowed and drops the group entirely. ``where`` names the
+    block the value came from, as in :func:`_coerce_paired_vars`.
     """
     if isinstance(value, str):
         raise ValueError(
-            f"data_types override {key!r} must be a list of cube names, got a "
+            f"{where} {key!r} must be a list of cube names, got a "
             f"string {value!r}"
         )
     return tuple(str(n) for n in value)
 
 
-def _coerce_levels(value, n_levels, key="model_levels"):
+def _coerce_levels(value, n_levels, key="model_levels", where="data_types override"):
     """
     Coerce a config list of model levels into a sorted, de-duplicated tuple of
     ints, validated against ``1..n_levels``.
+
+    ``where`` names the block the value came from, since the same key is accepted
+    both under ``data_types:`` and on a domain (see :func:`resolve_domain_levels`)
+    and a message naming the wrong one sends the reader to the wrong place.
 
     The string ``"all"`` is accepted as shorthand for every level the source has,
     ``1..n_levels``.
@@ -435,30 +466,30 @@ def _coerce_levels(value, n_levels, key="model_levels"):
         if value.strip().lower() == "all":
             return tuple(range(1, n_levels + 1))
         raise ValueError(
-            f"data_types override {key!r} must be a list of integer levels or "
+            f"{where} {key!r} must be a list of integer levels or "
             f'"all", got {value!r}'
         )
     if isinstance(value, int):
         raise ValueError(
-            f"data_types override {key!r} must be a list of integer levels or "
+            f"{where} {key!r} must be a list of integer levels or "
             f'"all", got {value!r}'
         )
     try:
         levels = sorted({int(v) for v in value})
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"data_types override {key!r} must be a list of integer levels, "
+            f"{where} {key!r} must be a list of integer levels, "
             f"got {value!r}"
         ) from exc
     if not levels:
         raise ValueError(
-            f"data_types override {key!r} is empty; give at least one level or "
+            f"{where} {key!r} is empty; give at least one level or "
             f"omit it to use level_stride"
         )
     bad = [lvl for lvl in levels if lvl < 1 or lvl > n_levels]
     if bad:
         raise ValueError(
-            f"data_types override {key!r}: level(s) {bad} out of range "
+            f"{where} {key!r}: level(s) {bad} out of range "
             f"1..{n_levels}"
         )
     return tuple(levels)
@@ -480,6 +511,9 @@ def get_source(name, cfg=None):
     to drop it. Cube names must match the archive's iris cube names exactly, and
     ``want_levels`` must reflect whether the cube carries model levels — a
     mismatch fails loudly at extraction (see ``extract_um_met.iris_io._pick``).
+    Set here they are the default for every domain reading this archive; a domain
+    may name any of the four groups itself and take its own set instead (see
+    :func:`resolve_domain_vars`).
 
     ``model_levels`` may be given as an explicit list of model levels to load
     (1-based, ≤ ``n_levels``), or the string ``"all"`` for every level the source
@@ -544,8 +578,8 @@ def drop_source_vars(source, names):
 
     The two instantaneous groups hold ``(name, want_levels)`` pairs and the two
     averaged groups hold bare names, so each is filtered on its own shape. A name
-    that matches nothing is left alone rather than raising: a ``data_types:``
-    override may legitimately have dropped it already.
+    that matches nothing is left alone rather than raising: a ``data_types:`` or
+    domain override may legitimately have dropped it already.
     """
     if not names:
         return source
@@ -564,21 +598,130 @@ def drop_source_vars(source, names):
     )
 
 
+def resolve_domain_vars(source, domain_cfg):
+    """
+    Apply a domain's own variable groups to ``source``.
+
+    All four groups (``mass_vars``, ``wind_vars``, ``averaged_mass_vars``,
+    ``averaged_staggered_vars``) are still accepted under ``data_types:``, where
+    they set the default for every domain reading that archive. A domain key
+    overrides it, for the reason ``max_level_m`` (A7), ``wind_vertical_regrid``
+    (B2), ``coord_decimals`` (B4) and the level selection (see
+    :func:`resolve_domain_levels`) all moved to the domain: a ``data_types:``
+    block is shared, so two domains on the same archive could never differ, and
+    which fields a store carries is exactly a thing they need to differ on.
+
+    **Group by group**: a domain that names ``mass_vars`` replaces the source's
+    mass group entirely and leaves the other three alone. Within a group it is a
+    replacement rather than a merge, for the same reason the ``data_types:``
+    override is one — the group is a complete statement of what to extract, and
+    an addition has no way to say what to remove. Set a group to ``[]`` to drop
+    it; ``drop_vars`` (applied after this, in :func:`get_domain_source`) is the
+    subtractive form, and still filters whatever the domain named here.
+    """
+    where = f"domain {domain_cfg.get('domain_name', '?')!r}"
+    changes = {}
+    for key in _PAIRED_VAR_KEYS:
+        if key in domain_cfg:
+            changes[key] = _coerce_paired_vars(domain_cfg[key], key, where=where)
+    for key in _NAME_VAR_KEYS:
+        if key in domain_cfg:
+            changes[key] = _coerce_name_vars(domain_cfg[key], key, where=where)
+    return replace(source, **changes)
+
+
+def resolve_domain_levels(source, domain_cfg):
+    """
+    Apply a domain's own ``model_levels:`` / ``level_stride:`` to ``source``.
+
+    Both keys are still accepted under ``data_types:``, where they set the default
+    for every domain reading that archive. A domain key overrides it, for the
+    reason ``max_level_m`` (A7), ``wind_vertical_regrid`` (B2) and
+    ``coord_decimals`` (B4) all moved to the domain: a ``data_types:`` block is
+    shared, so two domains on the same archive could never differ, and the level
+    selection is exactly a thing they need to differ on — GLIDE requires the
+    ladder contiguous from level 1 (their section 11 row 9) while NAME's product
+    is happy on five levels.
+
+    **A domain that states a selection replaces the source's entirely**, rather
+    than merging with it. The two keys are not independent: ``levels()`` takes
+    ``model_levels`` when it is set and ignores ``level_stride``, so a domain
+    asking for a stride against an archive-wide ``model_levels`` would otherwise
+    be silently ignored — the failure this move exists to remove.
+    """
+    if "model_levels" in domain_cfg:
+        return replace(
+            source,
+            model_levels=_coerce_levels(
+                domain_cfg["model_levels"], source.n_levels,
+                where=f"domain {domain_cfg.get('domain_name', '?')!r}",
+            ),
+        )
+    if "level_stride" in domain_cfg:
+        return replace(source, level_stride=int(domain_cfg["level_stride"]),
+                       model_levels=None)
+    return source
+
+
 def get_domain_source(domain_cfg, cfg):
     """
-    The source a domain reads, with the domain's ``drop_vars:`` applied.
+    The source a domain reads, with the domain's own variable groups, level
+    selection and ``drop_vars:`` applied.
 
     Dropping at the source descriptor means the cubes are never loaded, never
     staged to scratch and never joined, so the saving lands on runtime and
     scratch as well as on the store. Every entry point that builds a source for a
     domain goes through here, so ``extract`` (the per-region workers) and ``run``
-    cannot end up dropping different variables.
+    cannot end up extracting different variables or different levels.
 
-    Unlike the ``data_types:`` variable-group overrides, which are shared by every
-    domain reading the same archive, ``drop_vars`` is per domain.
+    ``drop_vars`` is applied last, so it filters the domain's own groups where it
+    named any and the ``data_types:`` ones where it did not — which is what lets
+    ``output_profile: glide`` supply a ``drop_vars`` that keeps working whatever
+    the domain's variable set turns out to be.
     """
     source = get_source(domain_cfg.get("data_type", "UM_Global"), cfg)
+    source = resolve_domain_vars(source, domain_cfg)
+    source = resolve_domain_levels(source, domain_cfg)
     return drop_source_vars(source, domain_cfg.get("drop_vars", ()))
+
+
+def describe_source_vars(source, drop_vars=()):
+    """
+    One line naming the variables a resolved source will extract, for the run
+    banner.
+
+    Three shapes, because "which variables" now has three answers and a store is
+    expensive enough to rebuild that a config which did not mean what it said
+    should be visible before the run rather than after it:
+
+    - the data type's whole set, untouched;
+    - that set minus a ``drop_vars`` list, the subtractive form — named, since
+      what is *missing* is the information there;
+    - anything else, i.e. a ``data_types:`` or domain variable group naming its
+      own set, which is printed in full because nothing about it can be inferred
+      from the data type.
+
+    Parameters
+    ----------
+    source : MetSource
+        The fully resolved descriptor from :func:`get_domain_source` — after both
+        override layers and after ``drop_vars``.
+    drop_vars : iterable of str, optional
+        The domain's ``drop_vars:``, needed only to tell the second shape from
+        the third: both narrow the set, and only this says which did it.
+    """
+    default = set(SOURCES[source.name].load_vars())
+    names = source.load_vars()
+    missing = default - set(names)
+    added = set(names) - default
+
+    if not missing and not added:
+        return f"Extracting all {len(names)} available variables"
+    if not added and missing == set(drop_vars) & default:
+        return (f"Extracting all available variables, dropping {sorted(missing)} "
+                f"({len(names)} remain)")
+    label = "variable set" if added else "variable subset"
+    return f"Extracting {label} ({len(names)}): {names}"
 
 
 def list_sources():

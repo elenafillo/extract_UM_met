@@ -85,10 +85,13 @@ def _levels_description(levels, max_level_m=None, wind_vertical_regrid="snap"):
     the source's topmost model level — there is no rho level above it to
     de-stagger from. A subsampled selection never claimed "all" in the first
     place, so it needs no adjusting.
+
+    ``wind_vertical_regrid`` is ``None`` for a store with no winds, which trims
+    nothing and so reads like ``snap`` here.
     """
     n = len(levels)
     if levels == list(range(1, n + 1)):
-        whole = max_level_m is None and wind_vertical_regrid == "snap"
+        whole = max_level_m is None and wind_vertical_regrid != "interpolate"
         described = f"all {n} model levels" if whole else f"the lowest {n} model levels"
     else:
         described = f"{n} model levels subsampled from 1-{levels[-1]}"
@@ -140,7 +143,7 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         The domain's level ceiling in metres, if it has one. Recorded as an
         attribute and named in the level description, which would otherwise
         describe a capped 1..n selection as every level the source has.
-    wind_vertical_regrid : str
+    wind_vertical_regrid : str, optional
         ``'snap'`` (default) or ``'interpolate'`` — see
         :func:`extract_um_met.config.resolve_wind_vertical_regrid`. Recorded as
         an attribute so a store can never be ambiguous about which it is, and
@@ -150,7 +153,12 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         not passed here — they are stamped onto the region intermediates by
         ``extract.extract_region``, where the cubes' own ladder is still
         readable, and survive the join's concats into ``ds.attrs`` untouched.
-    flux_time_regrid : str
+
+        ``None`` for a store whose source has no ``wind_vars``: neither the
+        attribute nor the sentence is written, because there are no winds for
+        either to be about. The caller decides that, not this function — the
+        store's variable set is the source's business.
+    flux_time_regrid : str, optional
         ``'snap'`` (default), ``'interpolate'`` or ``'keep'`` — see
         :func:`extract_um_met.config.resolve_flux_time_regrid`. Recorded for the
         same reason as ``wind_vertical_regrid``: ``snap`` and ``interpolate``
@@ -158,6 +166,11 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         shape says which it is. The per-variable ``averaging*`` attributes say
         the same thing field by field; this is the store-level statement the
         append guard reads.
+
+        ``None`` where both averaged groups are empty, on the same reasoning: the
+        mode still resolves to something (and below Mk10 resolves to ``keep``
+        whatever the domain asked for), but a store with no fluxes in it must not
+        claim a ``time_flux`` axis it does not have.
     coord_decimals : int, optional
         The decimal places lat/lon were rounded to before the float32 cast — see
         :func:`extract_um_met.config.resolve_coord_decimals`. Recorded so two
@@ -209,7 +222,9 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
     # overstates the height of the winds underneath it. 'interpolate' is the case
     # where level_height genuinely does apply to u/v, so the two must not share a
     # sentence.
-    if wind_vertical_regrid == "interpolate":
+    if wind_vertical_regrid is None:
+        wind_note = ""
+    elif wind_vertical_regrid == "interpolate":
         wind_note = (
             "winds interpolated horizontally onto the mass/pressure grid and "
             "de-staggered vertically onto the theta (mass) levels by a 2-point "
@@ -228,26 +243,33 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
         )
     # Only worth a sentence when it is not the default: a store saying nothing
     # about its fluxes is a snapped one, which is what every store said before
-    # the key existed.
+    # the key existed. None is the store with no averaged fields at all, which
+    # must not describe a timestamp convention for fields it does not carry.
     flux_note = {
+        None: "",
         "snap": "",
         "interpolate": (
-            "; the time-averaged fields (fluxes/stresses) are interpolated in "
+            "the time-averaged fields (fluxes/stresses) are interpolated in "
             "time onto the instantaneous steps, so they are centred on their "
             "timestamp rather than half a window late, and are no longer the "
             "mean of any single window"
         ),
         "keep": (
-            f"; the time-averaged fields (fluxes/stresses) are on their own "
+            f"the time-averaged fields (fluxes/stresses) are on their own "
             f"{FLUX_TIME_DIM} axis at the midpoint of their averaging window — "
             f"untouched means stamped at the time they are valid, one point per "
             f"window the archive supplies"
         ),
     }[flux_time_regrid]
-    auto_comment = (f"{wind_note}{flux_note}; retained {levels_description}; "
-                    f"grid_mode={grid_mode}")
+    # Assembled from whichever clauses apply rather than concatenated, so a store
+    # without winds or without fluxes reads as a sentence instead of opening on a
+    # stray separator.
+    notes = [note for note in (wind_note, flux_note) if note]
+    notes.append(f"retained {levels_description}")
+    notes.append(f"grid_mode={grid_mode}")
     if not use_interp:
-        auto_comment += "; fields kept on the native UM grid (no spatial interpolation)"
+        notes.append("fields kept on the native UM grid (no spatial interpolation)")
+    auto_comment = "; ".join(notes)
     user_comment = (md.get("comment") or "").strip()
     comment = f"{auto_comment}. {user_comment}" if user_comment else auto_comment
 
@@ -276,6 +298,17 @@ def apply_cf_metadata(ds, cfg, *, mk, grid_mode, domain_name, year, use_interp=T
     if coord_decimals is not None:
         attrs["coord_decimals"] = int(coord_decimals)
     ds.attrs.update(_clean(attrs))
+
+    # update() can only add. The region intermediates carry their own
+    # wind_vertical_regrid / flux_time_regrid stamps — extract.extract_region
+    # writes them unconditionally, for the join's staleness guards to read — and
+    # those survive the concat into ds.attrs. So a None mode has to *remove* the
+    # inherited attribute rather than merely decline to write its own, or the
+    # store would still describe fields it does not carry.
+    for key, mode in (("wind_vertical_regrid", wind_vertical_regrid),
+                      ("flux_time_regrid", flux_time_regrid)):
+        if mode is None:
+            ds.attrs.pop(key, None)
 
     return ds
 

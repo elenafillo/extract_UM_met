@@ -34,7 +34,7 @@ from .topog import extract_topog
 from .extract import extract_region, extract_single
 from .join import join_month, cleanup_region_intermediates
 from .periods import period_chunks, period_tag, resolve_intermediate_period
-from .sources import get_domain_source, get_source
+from .sources import describe_source_vars, get_domain_source, get_source
 from .zarr_io import (append_month_to_year_store, finalize_attrs,
                       resolve_compression_level, resolve_output_chunks,
                       resolve_precision)
@@ -639,13 +639,14 @@ def cmd_run(args):
     profile = domain_cfg.get("output_profile")
     profile_note = f"  |  output profile: {profile}" if profile else ""
     ceiling_note = f"  |  max_level_m: {max_level_m:g}" if max_level_m else ""
-    drop_vars = domain_cfg.get("drop_vars")
-    drop_note = f"  |  not extracting: {list(drop_vars)}" if drop_vars else ""
     print(f"Domain: {domain_name} ({domain_key})  |  data type: {source.name}  |  "
           f"grid mode: {grid_mode}  |  zarr v{zarr_format}{suffix_note}{profile_note}")
     print(f"Output chunks: {output_chunks}  |  intermediate period: {intermediate_period}"
           f"  |  zstd level: {compression_level}  |  precision: {precision}"
-          f"{ceiling_note}{drop_note}")
+          f"{ceiling_note}")
+    # Its own line rather than another `  |  ` clause: the subset and drop forms
+    # both carry a variable list, which is far too long to trail a shared line.
+    print(describe_source_vars(source, domain_cfg.get("drop_vars", ())))
 
     # Non-tiled sources (e.g. NZCSM): single file per timestep, no join; extract
     # and append a day at a time.

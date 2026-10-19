@@ -75,9 +75,11 @@ workflow is `python -m extract_um_met`.
   describing a data type on every axis (archive path, filename template, grid
   type, region scheme, tiled?, level count, cadence, compression, Mk calendar,
   which variable groups, …). The `SOURCES` registry holds `UM_Global`,
-  `UM1p5km`, `NZCSM`; `get_source(name, cfg)` returns one with config
-  path-overrides applied. It also owns the Mk calendars, the region-scheme
-  lookup, level subsampling (`levels()`), and filename globbing (`list_files`).
+  `UM1p5km`, `NZCSM`; `get_source(name, cfg)` returns one with the `data_types:`
+  overrides applied, and `get_domain_source(domain_cfg, cfg)` layers a domain's
+  own variable groups, levels and `drop_vars` on top of that. It also owns the Mk
+  calendars, the region-scheme lookup, level subsampling (`levels()`), and
+  filename globbing (`list_files`).
   **This is the data model only — it reads no cubes.**
 - {src}`periods.py <extract_um_met/periods.py>` — splits a month into the chunks
   that become intermediate files. `resolve_intermediate_period()` validates the
@@ -226,8 +228,8 @@ Variations handled in `cli.py`:
 | --- | ---- |
 | Add a **data type** (new product/archive) | add a `MetSource` to `SOURCES` in {src}`sources.py <extract_um_met/sources.py>`; set its archive path in `config.yaml → data_types:` |
 | Add a **grid mode** | extend `build_target_grid` and add a `_build_*_grid` in {src}`grid.py <extract_um_met/grid.py>` |
-| Change **which variables** are kept | `config.yaml → data_types:` (no code) — or the `*_vars` defaults on the `MetSource` in {src}`sources.py <extract_um_met/sources.py>` |
-| Change **level subsampling** | `level_stride` / `model_levels` in `config.yaml → data_types:` (no code) — defaults on the `MetSource` |
+| Change **which variables** are kept | the `*_vars` groups on the domain in `config.yaml`, or under `data_types:` for every domain on that archive (no code) — defaults on the `MetSource` in {src}`sources.py <extract_um_met/sources.py>` |
+| Change **level subsampling** | `level_stride` / `model_levels`, on the domain or under `data_types:` (no code) — defaults on the `MetSource` |
 | Change **where u/v sit vertically** | `wind_vertical_regrid` on the domain in `config.yaml` (no code) — logic in {src}`staggering.py <extract_um_met/staggering.py>`, see [reference §2](reference.md#wind-levels-wind_vertical_regrid) |
 | Change a store's **output chunking** | `output_chunks` on the domain in `config.yaml` (no code) — default `_ZARR_CHUNKS` in {src}`zarr_io.py <extract_um_met/zarr_io.py>` |
 | Change **peak memory** of a run | `intermediate_period` on the domain in `config.yaml` (no code) — logic in {src}`periods.py <extract_um_met/periods.py>` |

@@ -68,7 +68,14 @@ are omitted rather than written blank:
 sets a ceiling, see [§2](#capping-by-height-max_level_m)) ·
 `wind_vertical_regrid` · `wind_level_height_rho` / `wind_sigma_rho` (the winds'
 native rho ladder for the levels the store holds — see
-[§2](#wind-levels-wind_vertical_regrid))
+[§2](#wind-levels-wind_vertical_regrid)) · `flux_time_regrid`
+
+The last four are written **only if the store carries the fields they describe**.
+A domain whose `wind_vars` is empty gets no `wind_*` attributes and no wind
+sentence in the `comment`; one with both averaged groups empty gets no
+`flux_time_regrid`. The mode still resolves either way — below Mk10 it resolves
+to `keep` whatever the domain asked for — but a store with no fluxes in it should
+not claim a `time_flux` axis it does not have.
 
 Provenance and completeness attributes, written by `zarr_io.finalize_attrs`
 after each year:
@@ -89,8 +96,10 @@ ds.attrs["year_complete"], ds.attrs["missing_months"]
 
 ## 2. Choosing your own variables and levels
 
-The lists above are defaults, not fixed: both are overridable per data type under
-`config.yaml → data_types:`, no code change needed.
+The lists above are defaults, not fixed: both are overridable in `config.yaml`,
+no code change needed. They can be set in two places — under `data_types:`, where
+they are shared by every domain reading that archive, or on a single **domain**,
+which overrides it (see [below](#where-to-set-them-data_types-or-a-domain)).
 
 ```yaml
 data_types:
@@ -117,11 +126,50 @@ data_types:
 | `model_levels` | list of ints, 1-based | exact levels; **overrides** `level_stride` |
 | `model_levels` | `"all"` | every level the source has (L59 global, L70 NZCSM) |
 
+### Where to set them: `data_types:` or a domain
+
+Every key in that table is accepted on a **domain** as well, in the same form,
+and the domain wins:
+
+```yaml
+domains:
+  EUROPE:
+    mass_vars:
+      - [air_temperature, true]
+      - [specific_humidity, true]
+      - [surface_air_pressure, false]
+    model_levels: "all"
+```
+
+Set it on the domain when two domains reading the same archive need to differ,
+which is the case `data_types:` cannot express — a GLIDE domain needs its ladder
+contiguous from level 1 while NAME's product is happy on five levels, and they
+read the same Global archive.
+
+The override is **group by group, and a replacement within a group**. A domain
+naming `mass_vars` replaces the mass group and leaves `wind_vars` and the two
+averaged groups at the archive-wide setting, and the names it gives are the whole
+mass group, not additions to it. Give both winds or neither — u and v are rotated
+onto the mass grid as a pair, and a lone one is rejected rather than dropped from
+the store in silence.
+
+The level keys work the same way, with one extra rule: give **one** of
+`model_levels` / `level_stride`, because a domain that states a selection
+replaces the source's entirely. `model_levels` wins over `level_stride` wherever
+both are set, so a domain asking for a stride against an archive-wide
+`model_levels` would otherwise be ignored without a word.
+
+> **Do not set variables on a domain with `output_profile: glide`.** That profile
+> carries `precision: int16`, and the quantisation ranges are GLIDE's own table,
+> published for their field set and nothing else. A variable added on such a
+> domain stays float32 in an otherwise int16 store, with nothing on the store's
+> face saying which half is which. Take the profile's field set, or set
+> `precision: float32` alongside.
+
 ### Capping by height: `max_level_m`
 
-The keys above are per *data type*, so every domain reading the same archive
-shares them. A height ceiling is per **domain** instead — it belongs to what the
-domain is for, not to the archive:
+A height ceiling is per **domain** only, never per data type — it belongs to what
+the domain is for, not to the archive:
 
 ```yaml
 domains:
