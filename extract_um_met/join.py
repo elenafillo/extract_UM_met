@@ -32,6 +32,7 @@ from .glide import apply_glide_schema
 from .metadata import FLUX_TIME_DIM, apply_cf_metadata
 from .periods import month_days, period_tag
 from .sources import get_domain_source
+from .topog import load_orography
 from .regions import (
     build_domain_grid,
     drop_duplicate_coords,
@@ -222,6 +223,35 @@ def _check_region_flux_regrid(ds, region_id, file_path, expected):
         )
 
 
+def _agl_ceiling_message(ds, orog, max_level_m):
+    """
+    What a ``max_level_m`` ceiling reaches above GROUND, which is not what it says.
+
+    The key cuts on ``level_height``, height above **sea level**, while a consumer's
+    own ceiling — GLIDE's ``alt_max_m`` — is above **ground**. The two differ by the
+    orography, ``AGL(k) = level_height(k) - (1 - sigma(k)) * orog``, so over 3 km of
+    terrain a store capped at 15000 m reaches only about 12000 m AGL. GLIDE does not
+    fail there: targets above the top level constant-extrapolate from it, silently.
+    The number worth printing is therefore the one over the domain's **highest**
+    ground, since that is the column where the ceiling bites first.
+
+    Needs the orography, so it is logged wherever an ancillary is loaded — today the
+    glide profile. The rest of the ceiling's story, including the top level's height
+    above sea level, comes from ``extract._apply_max_level`` on every run.
+    """
+    top = int(ds["levels"].max())
+    level_height = float(ds["level_height"].sel(levels=top))
+    sigma = float(ds["sigma"].sel(levels=top))
+    peak = float(orog.max())
+    return (
+        f"max_level_m={max_level_m:g}: top level {top} sits at {level_height:.1f} m "
+        f"above sea level; over this domain's highest orography ({peak:.1f} m) that "
+        f"is {level_height - (1.0 - sigma) * peak:.1f} m above GROUND. A consumer's "
+        f"own ceiling (GLIDE's alt_max_m) must stay below that — above the top level "
+        f"their reader constant-extrapolates without saying so."
+    )
+
+
 def join_month(
     domain_key,
     year,
@@ -307,6 +337,15 @@ def join_month(
     # year that spans the Mk9/Mk10 boundary.
     flux_regrid = resolve_flux_time_regrid(domain_cfg, source.min_mk_in_year(year))
     coord_decimals = resolve_coord_decimals(domain_cfg)
+    max_level_m = resolve_max_level_m(domain_cfg)
+    # The GLIDE geopotentials are built from the orography ancillary at the very
+    # end of this function. Loading it up front means a missing or stale one fails
+    # before the extraction rather than after it — hours earlier, on a run where
+    # every region has to be read off the archive first.
+    orography = (
+        load_orography(cfg, domain_name, year)
+        if domain_cfg.get("output_profile") == "glide" else None
+    )
 
     # Resolve the target grid once for the whole period.
     if target is None:
@@ -431,17 +470,28 @@ def join_month(
         met = apply_cf_metadata(
             met, cfg, mk=mk, grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=use_interp,
-            source_name=source.name, max_level_m=resolve_max_level_m(domain_cfg),
-            wind_vertical_regrid=wind_regrid, flux_time_regrid=flux_regrid,
+            source_name=source.name, max_level_m=max_level_m,
+            # None where the store has no such fields, so the attributes and the
+            # comment describe what it actually carries — a variable set with no
+            # winds or no fluxes is reachable from either config layer.
+            wind_vertical_regrid=wind_regrid if source.wind_vars else None,
+            flux_time_regrid=flux_regrid if source.has_averaged_vars() else None,
             coord_decimals=coord_decimals,
         )
+
+        # What the ceiling comes to above ground, which is the number a consumer's
+        # own alt_max_m has to clear. Only computable where an ancillary is loaded.
+        if max_level_m is not None and orography is not None:
+            log(_agl_ceiling_message(met, orography, max_level_m))
 
         # Last, so that everything above — the stitching, the guards, the CF
         # metadata — works in our own names and only the store changes.
         if domain_cfg.get("output_profile") == "glide":
-            met = apply_glide_schema(met)
+            met = apply_glide_schema(met, orography)
             log("applied the GLIDE schema: their variable and coordinate names, "
-                "the heat flux negated")
+                "the heat flux negated, friction_velocity derived, the "
+                "geopotentials written from the orography ancillary, "
+                "level_height/sigma demoted to store attributes")
 
         log(f"{date_tag} dataset ready: {dict(met.sizes)} "
             f"(delta_lat={met.attrs.get('delta_lat', 'n/a')}, "

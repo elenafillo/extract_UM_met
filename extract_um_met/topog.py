@@ -217,6 +217,57 @@ def _ancillary_global_attrs(cfg, domain_name, source_name, mk, year, topog_file,
     return {k: v for k, v in attrs.items() if v != "" and v is not None}
 
 
+def ancillary_path(cfg, domain_name, year):
+    """
+    Where a domain-year's orography ancillary lives.
+
+    Shared by the writer below and by :func:`load_orography`, so the naming
+    convention is stated once: the geopotentials are built from this file at join
+    time, and a reader that reconstructed the path itself would be a second place
+    for it to drift.
+
+    Default beside the met stores, so a domain's orography sits next to the
+    yearly zarr it belongs with.
+    """
+    save_root = cfg.get("ancillary_save_directory") or cfg.get("zarr_save_directory")
+    return Path(save_root) / domain_name / f"{domain_name}_topog_{year}.nc"
+
+
+def load_orography(cfg, domain_name, year):
+    """
+    Read a domain-year's orography ancillary, for the GLIDE geopotentials (C8).
+
+    Returns the ``surface_altitude`` field on the store's own grid, carrying the
+    file's provenance — which ancillary, which Mk, and which coordinate
+    convention — so that :func:`extract_um_met.glide.apply_glide_schema` can
+    record on the geopotentials where their heights came from.
+
+    Read eagerly: it is one 2-D field, it is used in every level of a 3-D
+    product, and holding the file open for the length of a join is worse than
+    holding a few MB.
+    """
+    path = ancillary_path(cfg, domain_name, year)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no orography ancillary for {domain_name} {year} at {path}. The GLIDE "
+            f"profile writes geopotential and geopotential_at_surface, which are "
+            f"z = level_height + sigma * orog, so the ancillary is required rather "
+            f"than optional (their section 2). Write it with:\n"
+            f"    python -m extract_um_met extract-topog --domain {domain_name} "
+            f"--date {year}\n"
+            f"run from a directory whose config.yaml gives {domain_name} the same "
+            f"grid and coord_decimals as this store."
+        )
+
+    with xr.open_dataset(path) as ds:
+        orog = ds["surface_altitude"].load()
+        orog.attrs["ancillary_file"] = str(path)
+        for key in ("mk_version", "coord_decimals"):
+            if key in ds.attrs:
+                orog.attrs[key] = ds.attrs[key]
+    return orog
+
+
 def extract_topog(domain_key, cfg, year):
     """
     Write a domain's orography for one year, on the same grid as its met store.
@@ -294,10 +345,7 @@ def extract_topog(domain_key, cfg, year):
     # file is read beside, and it is the only thing on either that says so.
     ds.attrs["coord_decimals"] = coord_decimals
 
-    # Default beside the met stores, so a domain's orography sits next to the
-    # yearly zarr it belongs with.
-    save_root = cfg.get("ancillary_save_directory") or cfg.get("zarr_save_directory")
-    out_path = Path(save_root) / domain_name / f"{domain_name}_topog_{year}.nc"
+    out_path = ancillary_path(cfg, domain_name, year)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(out_path)
     print(f"    range {float(da.min()):.1f} .. {float(da.max()):.1f} m")

@@ -67,6 +67,12 @@ def _apply_max_level(levels, mass_cube, max_level_m):
 
     Applied to the already-resolved selection, so the bracketing level is the next
     level the store would have held, not the next model level in the archive.
+
+    Logs what the ceiling resolved to, including the top level's height, since
+    ``max_level_m`` is a metre value and the thing a reader wants to know is which
+    ladder it produced. That height is above **sea level**; what it comes to above
+    ground needs the orography, so :func:`extract_um_met.join._agl_ceiling_message`
+    says the rest wherever an ancillary is loaded.
     """
     heights = dict(zip(
         mass_cube.coord("model_level_number").points,
@@ -79,7 +85,11 @@ def _apply_max_level(levels, mass_cube, max_level_m):
             f"max_level_m={max_level_m:g} is below the lowest selected model level "
             f"(level {levels[0]} at {heights[levels[0]]:g} m); nothing would be extracted."
         )
-    return below + above[:1]
+    kept = below + above[:1]
+    log(f"max_level_m={max_level_m:g}: keeping {len(kept)} of {len(levels)} levels "
+        f"(top level {kept[-1]} at {heights[kept[-1]]:.1f} m above sea level, which "
+        f"brackets the ceiling)")
+    return kept
 
 
 def _averaging_prose(mode, hours):
@@ -705,8 +715,6 @@ def extract_region(
         # once a cube is loaded — and before the level selection is used below.
         if max_level_m is not None:
             levels = _apply_max_level(levels, _theta_ladder_cube(cube, source), max_level_m)
-            log(f"max_level_m={max_level_m:g}: keeping {len(levels)} levels "
-                f"(top level {levels[-1]}, which brackets the ceiling)")
 
         # `levels` is final here and nowhere earlier, so this is the only point
         # at which the rho ladder can be recorded index-for-index with it.
@@ -1017,8 +1025,6 @@ def extract_single(
         # before `levels` is used by _sub below.
         if max_level_m is not None:
             levels = _apply_max_level(levels, _theta_ladder_cube(cube, source), max_level_m)
-            log(f"max_level_m={max_level_m:g}: keeping {len(levels)} levels "
-                f"(top level {levels[-1]}, which brackets the ceiling)")
 
         target_cube = latlon_target_cube(target_lat, target_lon)
 
@@ -1113,8 +1119,11 @@ def extract_single(
         all_variables = apply_cf_metadata(
             all_variables, cfg, mk=source.get_mk(year, month), grid_mode=grid_mode,
             domain_name=domain_name, year=year, use_interp=True, source_name=source.name,
-            max_level_m=max_level_m, wind_vertical_regrid=wind_regrid,
-            flux_time_regrid=flux_regrid,
+            max_level_m=max_level_m,
+            # None where the store has no such fields — see the same pair in
+            # join.join_month.
+            wind_vertical_regrid=wind_regrid if source.wind_vars else None,
+            flux_time_regrid=flux_regrid if source.has_averaged_vars() else None,
         )
         all_variables.attrs.update(pole_attrs)
 
